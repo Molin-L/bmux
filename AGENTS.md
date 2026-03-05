@@ -17,9 +17,11 @@ Runtime artifacts live in `.bmux/` and `.worktrees/` and should remain uncommitt
 - `go run ./cmd/bmux`: run the app locally without installing.
 - `./scripts/build.sh --debug`: build `bin/bmux-debug` with debug flags.
 - `./scripts/build.sh --release`: build optimized `bin/bmux` for distribution.
+- `./scripts/format.sh`: format all source files (Go and shell when `shfmt` is available).
 
 ## Coding Style & Naming Conventions
 - Follow idiomatic Go and keep files `gofmt`-formatted.
+- Use `./scripts/format.sh` as the standard formatting entrypoint before submitting changes.
 - Use default Go formatting (tabs, standard import grouping); do not hand-format alignment.
 - Keep package names lowercase and focused (examples: `gitx`, `tmux`, `errorsx`).
 - Use descriptive lowercase filenames (examples: `service.go`, `planner_test.go`).
@@ -33,7 +35,8 @@ Runtime artifacts live in `.bmux/` and `.worktrees/` and should remain uncommitt
 - Cover both happy paths and failure modes for command wrappers and integrations.
 
 ## Commit & Pull Request Guidelines
-- Match existing commit style: `feat:`, `feat(scope):`, `refactor:`, `chore:` with imperative subjects.
+- All commit messages must follow Conventional Commits (`type(scope): subject` or `type: subject`).
+- Common types include: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`.
 - Keep commits scoped to one concern or package group.
 - PRs should include: summary of behavior changes, linked task/issue ID (for example `bd-123`), and test evidence (`go test ./...`).
 - For visible TUI changes, attach a short terminal screenshot or capture.
