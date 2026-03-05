@@ -54,6 +54,9 @@ func (t *stubTmux) SplitPane(context.Context, string, string) (string, error) { 
 func (t *stubTmux) SplitPaneOnTarget(context.Context, string, string, string) (string, error) {
 	return "%9", nil
 }
+func (t *stubTmux) SplitPaneOnTargetWithCommand(context.Context, string, string, string, string) (string, error) {
+	return "%9", nil
+}
 func (t *stubTmux) SendKeys(_ context.Context, _ string, text string, _ bool) error {
 	t.sent = append(t.sent, text)
 	return nil
@@ -65,12 +68,23 @@ func (*stubTmux) SetWindowOptionsForSidebar(context.Context, string, int) error 
 	return nil
 }
 func (*stubTmux) SelectLayoutMainVertical(context.Context, string) error { return nil }
+func (*stubTmux) SelectLayout(context.Context, string, string) error     { return nil }
 func (*stubTmux) SetBuffer(context.Context, string, string) error        { return nil }
 func (*stubTmux) PasteBuffer(context.Context, string, string) error      { return nil }
 func (*stubTmux) DeleteBuffer(context.Context, string) error             { return nil }
 func (*stubTmux) GetPaneCurrentCommand(context.Context, string) (string, error) {
 	return "codex", nil
 }
+func (*stubTmux) GetWindowDimensions(context.Context) (int, int, error) {
+	return 180, 50, nil
+}
+func (*stubTmux) GetTerminalDimensions(context.Context) (int, int, error) {
+	return 180, 50, nil
+}
+func (*stubTmux) SetWindowSizeManual(context.Context, string, int, int) error { return nil }
+func (*stubTmux) SetPaneTitle(context.Context, string, string) error          { return nil }
+func (*stubTmux) GetPaneTitle(context.Context, string) (string, error)        { return "", nil }
+func (*stubTmux) KillPane(context.Context, string) error                      { return nil }
 
 func TestStartPlanningPaneUsesConfigCommand(t *testing.T) {
 	t.Parallel()

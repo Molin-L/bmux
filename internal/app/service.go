@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Molin-L/bmux/internal/beads"
+	"github.com/Molin-L/bmux/internal/layout"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/promptx"
 	"github.com/Molin-L/bmux/internal/state"
@@ -56,16 +57,24 @@ type PRPromptBuilder interface {
 type TmuxClient interface {
 	SplitPane(ctx context.Context, direction, cwd string) (string, error)
 	SplitPaneOnTarget(ctx context.Context, direction, cwd, target string) (string, error)
+	SplitPaneOnTargetWithCommand(ctx context.Context, direction, cwd, target, command string) (string, error)
 	SendKeys(ctx context.Context, paneID, text string, enter bool) error
 	CapturePane(ctx context.Context, paneID string, lines int) (string, error)
 	CurrentPaneID(ctx context.Context) (string, error)
 	ListPanes(ctx context.Context, target string) ([]string, error)
 	SetWindowOptionsForSidebar(ctx context.Context, target string, controlWidth int) error
+	SelectLayout(ctx context.Context, target, layout string) error
 	SelectLayoutMainVertical(ctx context.Context, target string) error
 	SetBuffer(ctx context.Context, bufferName, content string) error
 	PasteBuffer(ctx context.Context, bufferName, paneID string) error
 	DeleteBuffer(ctx context.Context, bufferName string) error
 	GetPaneCurrentCommand(ctx context.Context, paneID string) (string, error)
+	GetWindowDimensions(ctx context.Context) (int, int, error)
+	GetTerminalDimensions(ctx context.Context) (int, int, error)
+	SetWindowSizeManual(ctx context.Context, target string, width, height int) error
+	SetPaneTitle(ctx context.Context, paneID, title string) error
+	GetPaneTitle(ctx context.Context, paneID string) (string, error)
+	KillPane(ctx context.Context, paneID string) error
 }
 
 type PlanItem struct {
@@ -102,6 +111,8 @@ type Options struct {
 	PromptTemplate         string
 	TmuxLayout             string
 	ControlWidth           int
+	MinPaneWidth           int
+	MaxPaneWidth           int
 	ChaosMaxParallel       int
 	ExecutionPlanPrompt    string
 	ExecutionSelfRunPrompt string
@@ -133,9 +144,12 @@ type Service struct {
 	planner          BranchPlanner
 	promptBuilder    PRPromptBuilder
 	tmux             TmuxClient
+	layoutManager    *layout.Manager
 	splitDirection   string
 	tmuxLayout       string
 	controlWidth     int
+	minPaneWidth     int
+	maxPaneWidth     int
 	agentCommands    map[string]string
 	promptTemplate   string
 	chaosMaxParallel int
@@ -157,7 +171,11 @@ type RunSummary struct {
 
 func NewService(opts Options) *Service {
 	planPrompt, selfRunPrompt, chaosPrompt := executionPromptTemplates(opts.ExecutionPlanPrompt, opts.ExecutionSelfRunPrompt, opts.ExecutionChaosPrompt)
-	return &Service{
+	controlWidth := normalizeControlWidth(opts.ControlWidth)
+	minPaneWidth, maxPaneWidth := normalizePaneWidths(opts.MinPaneWidth, opts.MaxPaneWidth)
+	tmuxLayout := normalizeTmuxLayout(opts.TmuxLayout)
+
+	svc := &Service{
 		repoRoot:       opts.RepoRoot,
 		worktreeDir:    opts.WorktreeDir,
 		store:          opts.Store,
@@ -167,8 +185,10 @@ func NewService(opts Options) *Service {
 		promptBuilder:  opts.PromptBuilder,
 		tmux:           opts.Tmux,
 		splitDirection: normalizeSplitDirection(opts.SplitDirection),
-		tmuxLayout:     normalizeTmuxLayout(opts.TmuxLayout),
-		controlWidth:   normalizeControlWidth(opts.ControlWidth),
+		tmuxLayout:     tmuxLayout,
+		controlWidth:   controlWidth,
+		minPaneWidth:   minPaneWidth,
+		maxPaneWidth:   maxPaneWidth,
 		agentCommands: map[string]string{
 			"claude": strings.TrimSpace(opts.ClaudeCommand),
 			"codex":  strings.TrimSpace(opts.CodexCommand),
@@ -181,6 +201,16 @@ func NewService(opts Options) *Service {
 			chaos:   chaosPrompt,
 		},
 	}
+	if svc.tmux != nil && svc.tmuxLayout == "sidebar" {
+		svc.layoutManager = layout.NewManager(svc.tmux, layout.Config{
+			SidebarWidth:       svc.controlWidth,
+			MinPaneWidth:       svc.minPaneWidth,
+			MaxPaneWidth:       svc.maxPaneWidth,
+			MinPaneHeight:      15,
+			MinSpacerPaneWidth: 20,
+		})
+	}
+	return svc
 }
 
 func normalizeSplitDirection(v string) string {
@@ -202,6 +232,28 @@ func normalizeControlWidth(v int) int {
 		return 40
 	}
 	return v
+}
+
+func normalizePaneWidth(v, fallback int) int {
+	if v == 0 {
+		v = fallback
+	}
+	if v < 40 {
+		return 40
+	}
+	if v > 300 {
+		return 300
+	}
+	return v
+}
+
+func normalizePaneWidths(minPaneWidth, maxPaneWidth int) (int, int) {
+	minPaneWidth = normalizePaneWidth(minPaneWidth, 50)
+	maxPaneWidth = normalizePaneWidth(maxPaneWidth, 80)
+	if minPaneWidth > maxPaneWidth {
+		maxPaneWidth = minPaneWidth
+	}
+	return minPaneWidth, maxPaneWidth
 }
 
 func normalizeChaosMaxParallel(v int) int {
@@ -1034,8 +1086,11 @@ func (s *Service) ReconcileRuns(ctx context.Context) error {
 	if err := s.ReconcileRunLocks(ctx); err != nil {
 		return err
 	}
-	_, _, err := s.PromotePendingRuns(ctx)
-	return err
+	if _, _, err := s.PromotePendingRuns(ctx); err != nil {
+		return err
+	}
+	_ = s.recalculateSidebarLayout(ctx, "", false)
+	return nil
 }
 
 func (s *Service) renderModePrompt(mode model.RunMode, issue model.Issue, taskMeta model.TaskBranchMeta) string {
@@ -1190,17 +1245,73 @@ func (s *Service) createPane(ctx context.Context, cwd string) (string, error) {
 		for _, pane := range panes {
 			p := strings.TrimSpace(pane)
 			if p != "" && p != currentPane {
+				title, titleErr := s.tmux.GetPaneTitle(ctx, p)
+				if titleErr == nil && title == layout.SpacerPaneTitle {
+					continue
+				}
 				target = p
 			}
 		}
 	}
-	paneID, err := s.tmux.SplitPaneOnTarget(ctx, s.splitDirection, cwd, target)
+	paneID, err := s.tmux.SplitPaneOnTargetWithCommand(ctx, "right", cwd, target, "")
 	if err != nil {
 		return "", err
 	}
-	_ = s.tmux.SetWindowOptionsForSidebar(ctx, "", s.controlWidth)
-	_ = s.tmux.SelectLayoutMainVertical(ctx, "")
+	_ = s.recalculateSidebarLayout(ctx, currentPane, true)
 	return paneID, nil
+}
+
+func (s *Service) recalculateSidebarLayout(ctx context.Context, controlPaneID string, force bool) error {
+	if s.layoutManager == nil || s.tmuxLayout != "sidebar" {
+		return nil
+	}
+	if strings.TrimSpace(controlPaneID) == "" {
+		paneID, err := s.resolveControlPaneID(ctx)
+		if err != nil {
+			return err
+		}
+		controlPaneID = paneID
+	}
+	if strings.TrimSpace(controlPaneID) == "" {
+		return nil
+	}
+	return s.layoutManager.Recalculate(ctx, controlPaneID, force)
+}
+
+func (s *Service) resolveControlPaneID(ctx context.Context) (string, error) {
+	panes, err := s.tmux.ListPanes(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	if len(panes) == 0 {
+		return "", nil
+	}
+
+	currentPane, currentErr := s.tmux.CurrentPaneID(ctx)
+	if currentErr == nil {
+		currentPane = strings.TrimSpace(currentPane)
+		for _, paneID := range panes {
+			if strings.TrimSpace(paneID) == currentPane {
+				return currentPane, nil
+			}
+		}
+	}
+
+	for _, paneID := range panes {
+		candidate := strings.TrimSpace(paneID)
+		if candidate == "" {
+			continue
+		}
+		cmd, cmdErr := s.tmux.GetPaneCurrentCommand(ctx, candidate)
+		if cmdErr != nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(cmd), "bmux") {
+			return candidate, nil
+		}
+	}
+
+	return strings.TrimSpace(panes[0]), nil
 }
 
 func (s *Service) startCodexAgent(ctx context.Context, paneID, cmd string) (string, error) {

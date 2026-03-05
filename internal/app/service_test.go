@@ -123,16 +123,27 @@ type fakePromptBuilder struct{ out string }
 func (b fakePromptBuilder) Build(model.Issue, model.TaskBranchMeta) string { return b.out }
 
 type fakeTmux struct {
-	paneID     string
-	captured   string
-	splitErr   error
-	sendErr    error
-	captureErr error
-	bufferErr  error
-	sent       []string
-	splitDir   string
-	splitCWD   string
-	pasted     []string
+	paneID          string
+	captured        string
+	splitErr        error
+	sendErr         error
+	captureErr      error
+	bufferErr       error
+	sent            []string
+	splitDir        string
+	splitCWD        string
+	splitTarget     string
+	splitCommand    string
+	pasted          []string
+	panes           []string
+	titles          map[string]string
+	terminalWidth   int
+	terminalHeight  int
+	windowWidth     int
+	windowHeight    int
+	layouts         []string
+	sidebarSetCalls int
+	windowSizeCalls int
 }
 
 func (t *fakeTmux) SplitPane(_ context.Context, direction, cwd string) (string, error) {
@@ -147,7 +158,14 @@ func (t *fakeTmux) SplitPane(_ context.Context, direction, cwd string) (string, 
 	return t.paneID, nil
 }
 
-func (t *fakeTmux) SplitPaneOnTarget(_ context.Context, direction, cwd, _ string) (string, error) {
+func (t *fakeTmux) SplitPaneOnTarget(_ context.Context, direction, cwd, target string) (string, error) {
+	t.splitTarget = target
+	return t.SplitPane(context.Background(), direction, cwd)
+}
+
+func (t *fakeTmux) SplitPaneOnTargetWithCommand(_ context.Context, direction, cwd, target, command string) (string, error) {
+	t.splitTarget = target
+	t.splitCommand = command
 	return t.SplitPane(context.Background(), direction, cwd)
 }
 
@@ -168,13 +186,28 @@ func (t *fakeTmux) CapturePane(context.Context, string, int) (string, error) {
 
 func (t *fakeTmux) CurrentPaneID(context.Context) (string, error) { return "%1", nil }
 func (t *fakeTmux) ListPanes(context.Context, string) ([]string, error) {
+	if len(t.panes) > 0 {
+		out := make([]string, len(t.panes))
+		copy(out, t.panes)
+		return out, nil
+	}
 	if strings.TrimSpace(t.paneID) != "" {
 		return []string{"%1", t.paneID}, nil
 	}
 	return []string{"%1", "%2"}, nil
 }
-func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) error { return nil }
-func (t *fakeTmux) SelectLayoutMainVertical(context.Context, string) error        { return nil }
+func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) error {
+	t.sidebarSetCalls++
+	return nil
+}
+func (t *fakeTmux) SelectLayoutMainVertical(context.Context, string) error {
+	t.layouts = append(t.layouts, "main-vertical")
+	return nil
+}
+func (t *fakeTmux) SelectLayout(_ context.Context, _ string, layout string) error {
+	t.layouts = append(t.layouts, layout)
+	return nil
+}
 func (t *fakeTmux) SetBuffer(_ context.Context, _ string, content string) error {
 	if t.bufferErr != nil {
 		return t.bufferErr
@@ -186,6 +219,60 @@ func (t *fakeTmux) PasteBuffer(context.Context, string, string) error { return n
 func (t *fakeTmux) DeleteBuffer(context.Context, string) error        { return nil }
 func (t *fakeTmux) GetPaneCurrentCommand(context.Context, string) (string, error) {
 	return "codex", nil
+}
+func (t *fakeTmux) GetWindowDimensions(context.Context) (int, int, error) {
+	w := t.windowWidth
+	h := t.windowHeight
+	if w == 0 {
+		w = 180
+	}
+	if h == 0 {
+		h = 50
+	}
+	return w, h, nil
+}
+func (t *fakeTmux) GetTerminalDimensions(context.Context) (int, int, error) {
+	w := t.terminalWidth
+	h := t.terminalHeight
+	if w == 0 {
+		w = 180
+	}
+	if h == 0 {
+		h = 50
+	}
+	return w, h, nil
+}
+func (t *fakeTmux) SetWindowSizeManual(_ context.Context, _ string, width, height int) error {
+	t.windowWidth = width
+	t.windowHeight = height
+	t.windowSizeCalls++
+	return nil
+}
+func (t *fakeTmux) SetPaneTitle(_ context.Context, paneID, title string) error {
+	if t.titles == nil {
+		t.titles = map[string]string{}
+	}
+	t.titles[paneID] = title
+	return nil
+}
+func (t *fakeTmux) GetPaneTitle(_ context.Context, paneID string) (string, error) {
+	if t.titles == nil {
+		return "", nil
+	}
+	return t.titles[paneID], nil
+}
+func (t *fakeTmux) KillPane(_ context.Context, paneID string) error {
+	if len(t.panes) == 0 {
+		return nil
+	}
+	next := make([]string, 0, len(t.panes))
+	for _, pane := range t.panes {
+		if pane != paneID {
+			next = append(next, pane)
+		}
+	}
+	t.panes = next
+	return nil
 }
 
 func TestOpenTaskCreatesNewWorktreeAndStoresMetadata(t *testing.T) {
@@ -600,7 +687,7 @@ func TestStartPlanningPane(t *testing.T) {
 	svc := app.NewService(app.Options{
 		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
 		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
-		Tmux: tmux, SplitDirection: "below", ClaudeCommand: "claude --plan",
+		Tmux: tmux, SplitDirection: "below", TmuxLayout: "sidebar", ClaudeCommand: "claude --plan",
 	})
 	paneID, _, err := svc.StartPlanningPane(context.Background(), "claude")
 	if err != nil {
@@ -609,11 +696,55 @@ func TestStartPlanningPane(t *testing.T) {
 	if paneID != "%3" {
 		t.Fatalf("pane id = %q", paneID)
 	}
-	if tmux.splitDir != "below" {
+	if tmux.splitDir != "right" {
 		t.Fatalf("split dir = %q", tmux.splitDir)
 	}
 	if len(tmux.sent) != 2 {
 		t.Fatalf("send calls = %d", len(tmux.sent))
+	}
+}
+
+func TestStartPlanningPaneSidebarTargetsLastNonSpacerPane(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		paneID: "%7",
+		panes:  []string{"%1", "%2", "%9"},
+		titles: map[string]string{"%9": "bmux-spacer"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+		Tmux: tmux, TmuxLayout: "sidebar", ClaudeCommand: "claude --plan",
+	})
+	if _, _, err := svc.StartPlanningPane(context.Background(), "claude"); err != nil {
+		t.Fatalf("start planning pane: %v", err)
+	}
+	if tmux.splitTarget != "%2" {
+		t.Fatalf("split target = %q, want %q", tmux.splitTarget, "%2")
+	}
+}
+
+func TestReconcileRunsTriggersLayoutRecalculate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		panes:          []string{"%1", "%2", "%3"},
+		terminalWidth:  200,
+		terminalHeight: 50,
+		windowWidth:    200,
+		windowHeight:   50,
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+		Tmux: tmux, TmuxLayout: "sidebar", ControlWidth: 40, MinPaneWidth: 50, MaxPaneWidth: 80,
+	})
+	if err := svc.ReconcileRuns(context.Background()); err != nil {
+		t.Fatalf("reconcile runs: %v", err)
+	}
+	if len(tmux.layouts) == 0 {
+		t.Fatalf("expected layout recalc to apply layout")
 	}
 }
 

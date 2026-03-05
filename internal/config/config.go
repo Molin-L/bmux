@@ -12,6 +12,8 @@ import (
 
 const (
 	DefaultBranchPrefix = "task/"
+	minPaneWidthMin     = 40
+	minPaneWidthMax     = 300
 )
 
 type Config struct {
@@ -40,6 +42,8 @@ type TmuxConfig struct {
 	Layout           string `yaml:"layout"`
 	ControlPaneWidth int    `yaml:"control_pane_width"`
 	SessionPrefix    string `yaml:"session_prefix"`
+	MinPaneWidth     int    `yaml:"min_pane_width"`
+	MaxPaneWidth     int    `yaml:"max_pane_width"`
 }
 
 type PlanningConfig struct {
@@ -69,6 +73,8 @@ func defaultConfig(projectRoot string) Config {
 			Layout:           "sidebar",
 			ControlPaneWidth: 40,
 			SessionPrefix:    "bmux-",
+			MinPaneWidth:     50,
+			MaxPaneWidth:     80,
 		},
 		Execution: ExecutionConfig{
 			ChaosMaxParallel: 2,
@@ -114,6 +120,11 @@ func Load(projectRoot, homeDir string) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Tmux.SessionPrefix) == "" {
 		cfg.Tmux.SessionPrefix = "bmux-"
+	}
+	cfg.Tmux.MinPaneWidth = clampPaneWidth(cfg.Tmux.MinPaneWidth)
+	cfg.Tmux.MaxPaneWidth = clampPaneWidth(cfg.Tmux.MaxPaneWidth)
+	if cfg.Tmux.MinPaneWidth > cfg.Tmux.MaxPaneWidth {
+		cfg.Tmux.MaxPaneWidth = cfg.Tmux.MinPaneWidth
 	}
 	if cfg.Execution.ChaosMaxParallel <= 0 {
 		cfg.Execution.ChaosMaxParallel = 2
@@ -166,6 +177,12 @@ func mergeFromFile(cfg *Config, path string) error {
 	if next.Tmux.SessionPrefix != "" {
 		cfg.Tmux.SessionPrefix = next.Tmux.SessionPrefix
 	}
+	if next.Tmux.MinPaneWidth != 0 {
+		cfg.Tmux.MinPaneWidth = next.Tmux.MinPaneWidth
+	}
+	if next.Tmux.MaxPaneWidth != 0 {
+		cfg.Tmux.MaxPaneWidth = next.Tmux.MaxPaneWidth
+	}
 	// Respect explicit false values by always copying booleans.
 	cfg.Tmux.AutoAttach = next.Tmux.AutoAttach || cfg.Tmux.AutoAttach
 	if !next.Tmux.AutoAttach {
@@ -196,6 +213,16 @@ func mergeFromFile(cfg *Config, path string) error {
 		cfg.Execution.Prompts.Chaos = next.Execution.Prompts.Chaos
 	}
 	return nil
+}
+
+func clampPaneWidth(v int) int {
+	if v < minPaneWidthMin {
+		return minPaneWidthMin
+	}
+	if v > minPaneWidthMax {
+		return minPaneWidthMax
+	}
+	return v
 }
 
 func resolveWorktreeDir(worktreeDir, projectRoot string) string {

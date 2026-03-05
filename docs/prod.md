@@ -205,14 +205,14 @@ Requirements:
 
 - FR-070: Project settings override global settings.
 - FR-071: Supported keys include:
-1. `permissionMode`
-2. `enableAutopilotByDefault`
-3. `defaultAgent`
-4. `useTmuxHooks`
-5. `baseBranch`
-6. `branchPrefix`
-7. `minPaneWidth`
-8. `maxPaneWidth`
+1. `tmux.control_pane_width`
+2. `tmux.min_pane_width`
+3. `tmux.max_pane_width`
+4. `tmux.layout`
+5. `tmux.split_direction`
+
+- FR-071A: In `tmux.layout=sidebar`, pane placement is layout-manager controlled (dmux-style grid fitting with optional spacer pane).
+- FR-071B: `tmux.split_direction` remains effective for `tmux.layout=single`.
 
 - FR-072: Validate `baseBranch` and `branchPrefix` as safe git branch names.
 - FR-073: Validate pane width ranges and normalize `min <= max`.

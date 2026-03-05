@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -29,10 +30,14 @@ func NewClient(r *execx.Runner) *Client {
 }
 
 func (c *Client) SplitPane(ctx context.Context, direction, cwd string) (string, error) {
-	return c.SplitPaneOnTarget(ctx, direction, cwd, "")
+	return c.SplitPaneOnTargetWithCommand(ctx, direction, cwd, "", "")
 }
 
 func (c *Client) SplitPaneOnTarget(ctx context.Context, direction, cwd, target string) (string, error) {
+	return c.SplitPaneOnTargetWithCommand(ctx, direction, cwd, target, "")
+}
+
+func (c *Client) SplitPaneOnTargetWithCommand(ctx context.Context, direction, cwd, target, command string) (string, error) {
 	if _, err := lookPath("tmux"); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || strings.Contains(strings.ToLower(err.Error()), "not found") {
 			return "", errors.New("tmux not found in PATH; `n` requires tmux")
@@ -54,6 +59,9 @@ func (c *Client) SplitPaneOnTarget(ctx context.Context, direction, cwd, target s
 	}
 	if strings.TrimSpace(cwd) != "" {
 		args = append(args, "-c", cwd)
+	}
+	if strings.TrimSpace(command) != "" {
+		args = append(args, command)
 	}
 	out, err := c.runner.Run(ctx, cwd, "tmux", args...)
 	if err != nil {
@@ -127,11 +135,15 @@ func (c *Client) SetWindowOptionsForSidebar(ctx context.Context, target string, 
 }
 
 func (c *Client) SelectLayoutMainVertical(ctx context.Context, target string) error {
+	return c.SelectLayout(ctx, target, "main-vertical")
+}
+
+func (c *Client) SelectLayout(ctx context.Context, target, layout string) error {
 	args := []string{"select-layout"}
 	if strings.TrimSpace(target) != "" {
 		args = append(args, "-t", target)
 	}
-	args = append(args, "main-vertical")
+	args = append(args, layout)
 	_, err := c.runner.Run(ctx, "", "tmux", args...)
 	return err
 }
@@ -198,6 +210,67 @@ func (c *Client) GetPaneCurrentCommand(ctx context.Context, paneID string) (stri
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (c *Client) GetWindowDimensions(ctx context.Context) (int, int, error) {
+	return c.parseDimensions(ctx, "#{window_width} #{window_height}")
+}
+
+func (c *Client) GetTerminalDimensions(ctx context.Context) (int, int, error) {
+	return c.parseDimensions(ctx, "#{client_width} #{client_height}")
+}
+
+func (c *Client) parseDimensions(ctx context.Context, format string) (int, int, error) {
+	out, err := c.runner.Run(ctx, "", "tmux", "display-message", "-p", format)
+	if err != nil {
+		return 0, 0, err
+	}
+	parts := regexp.MustCompile(`\s+`).Split(strings.TrimSpace(out), -1)
+	if len(parts) < 2 {
+		return 0, 0, fmt.Errorf("invalid dimensions output %q", strings.TrimSpace(out))
+	}
+	width, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse width: %w", err)
+	}
+	height, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse height: %w", err)
+	}
+	return width, height, nil
+}
+
+func (c *Client) SetWindowSizeManual(ctx context.Context, target string, width, height int) error {
+	base := []string{}
+	if strings.TrimSpace(target) != "" {
+		base = []string{"-t", target}
+	}
+	if _, err := c.runner.Run(ctx, "", "tmux", append([]string{"set-window-option"}, append(base, "window-size", "manual")...)...); err != nil {
+		return err
+	}
+	args := []string{"resize-window"}
+	args = append(args, base...)
+	args = append(args, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
+	_, err := c.runner.Run(ctx, "", "tmux", args...)
+	return err
+}
+
+func (c *Client) SetPaneTitle(ctx context.Context, paneID, title string) error {
+	_, err := c.runner.Run(ctx, "", "tmux", "select-pane", "-t", paneID, "-T", title)
+	return err
+}
+
+func (c *Client) GetPaneTitle(ctx context.Context, paneID string) (string, error) {
+	out, err := c.runner.Run(ctx, "", "tmux", "display-message", "-p", "-t", paneID, "#{pane_title}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (c *Client) KillPane(ctx context.Context, paneID string) error {
+	_, err := c.runner.Run(ctx, "", "tmux", "kill-pane", "-t", paneID)
+	return err
 }
 
 var osEnv = func(key string) string {

@@ -23,12 +23,12 @@ func TestLoadPrecedence_ProjectOverGlobalOverDefault(t *testing.T) {
 		t.Fatalf("mkdir project: %v", err)
 	}
 
-	globalYAML := []byte("worktree_dir: /tmp/global-wt\nbranch_prefix: global/\ntmux:\n  split_direction: below\n  auto_attach: true\n  layout: sidebar\n  control_pane_width: 55\n  session_prefix: bmux-global-\nagents:\n  claude:\n    command: claude --plan\n")
+	globalYAML := []byte("worktree_dir: /tmp/global-wt\nbranch_prefix: global/\ntmux:\n  split_direction: below\n  auto_attach: true\n  layout: sidebar\n  control_pane_width: 55\n  session_prefix: bmux-global-\n  min_pane_width: 70\n  max_pane_width: 140\nagents:\n  claude:\n    command: claude --plan\n")
 	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), globalYAML, 0o644); err != nil {
 		t.Fatalf("write global config: %v", err)
 	}
 
-	projectYAML := []byte("branch_prefix: project/\nplanning:\n  prompt_template: custom prompt\nagents:\n  codex:\n    command: codex --mode plan\ntmux:\n  auto_attach: false\n")
+	projectYAML := []byte("branch_prefix: project/\nplanning:\n  prompt_template: custom prompt\nagents:\n  codex:\n    command: codex --mode plan\ntmux:\n  auto_attach: false\n  min_pane_width: 90\n")
 	if err := os.WriteFile(filepath.Join(projectDir, "config.yaml"), projectYAML, 0o644); err != nil {
 		t.Fatalf("write project config: %v", err)
 	}
@@ -55,6 +55,12 @@ func TestLoadPrecedence_ProjectOverGlobalOverDefault(t *testing.T) {
 	}
 	if got, want := cfg.Tmux.SessionPrefix, "bmux-global-"; got != want {
 		t.Fatalf("tmux.session_prefix = %q, want %q", got, want)
+	}
+	if got, want := cfg.Tmux.MinPaneWidth, 90; got != want {
+		t.Fatalf("tmux.min_pane_width = %d, want %d", got, want)
+	}
+	if got, want := cfg.Tmux.MaxPaneWidth, 140; got != want {
+		t.Fatalf("tmux.max_pane_width = %d, want %d", got, want)
 	}
 	if cfg.Tmux.AutoAttach {
 		t.Fatalf("tmux.auto_attach = true, want false")
@@ -106,6 +112,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("default tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")
 	}
+	if cfg.Tmux.MinPaneWidth != 50 {
+		t.Fatalf("default tmux.min_pane_width = %d, want %d", cfg.Tmux.MinPaneWidth, 50)
+	}
+	if cfg.Tmux.MaxPaneWidth != 80 {
+		t.Fatalf("default tmux.max_pane_width = %d, want %d", cfg.Tmux.MaxPaneWidth, 80)
+	}
 	if cfg.Execution.ChaosMaxParallel != 2 {
 		t.Fatalf("default execution.chaos_max_parallel = %d, want %d", cfg.Execution.ChaosMaxParallel, 2)
 	}
@@ -120,7 +132,7 @@ func TestLoadInvalidSplitDirectionFallsBack(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "config.yaml"), []byte("tmux:\n  split_direction: diagonal\n  layout: grid\n  control_pane_width: -1\n  session_prefix: \"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "config.yaml"), []byte("tmux:\n  split_direction: diagonal\n  layout: grid\n  control_pane_width: -1\n  session_prefix: \"\"\n  min_pane_width: 10\n  max_pane_width: 999\n"), 0o644); err != nil {
 		t.Fatalf("write project config: %v", err)
 	}
 
@@ -140,8 +152,40 @@ func TestLoadInvalidSplitDirectionFallsBack(t *testing.T) {
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")
 	}
+	if cfg.Tmux.MinPaneWidth != 40 {
+		t.Fatalf("tmux.min_pane_width = %d, want %d", cfg.Tmux.MinPaneWidth, 40)
+	}
+	if cfg.Tmux.MaxPaneWidth != 300 {
+		t.Fatalf("tmux.max_pane_width = %d, want %d", cfg.Tmux.MaxPaneWidth, 300)
+	}
 	if cfg.Execution.ChaosMaxParallel != 2 {
 		t.Fatalf("execution.chaos_max_parallel = %d, want %d", cfg.Execution.ChaosMaxParallel, 2)
+	}
+}
+
+func TestLoadMinPaneWidthNormalizedToMaxPaneWidth(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := t.TempDir()
+	projectDir := filepath.Join(root, ".bmux")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	projectYAML := []byte("tmux:\n  min_pane_width: 120\n  max_pane_width: 80\n")
+	if err := os.WriteFile(filepath.Join(projectDir, "config.yaml"), projectYAML, 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	cfg, err := config.Load(root, home)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got, want := cfg.Tmux.MinPaneWidth, 120; got != want {
+		t.Fatalf("tmux.min_pane_width = %d, want %d", got, want)
+	}
+	if got, want := cfg.Tmux.MaxPaneWidth, 120; got != want {
+		t.Fatalf("tmux.max_pane_width = %d, want %d", got, want)
 	}
 }
 

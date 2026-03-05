@@ -56,6 +56,8 @@ func NewDefaultService(repoRoot string) (*Service, config.Config, error) {
 		PromptTemplate:         cfg.Planning.PromptTemplate,
 		TmuxLayout:             cfg.Tmux.Layout,
 		ControlWidth:           cfg.Tmux.ControlPaneWidth,
+		MinPaneWidth:           cfg.Tmux.MinPaneWidth,
+		MaxPaneWidth:           cfg.Tmux.MaxPaneWidth,
 		ChaosMaxParallel:       cfg.Execution.ChaosMaxParallel,
 		ExecutionPlanPrompt:    cfg.Execution.Prompts.Plan,
 		ExecutionSelfRunPrompt: cfg.Execution.Prompts.SelfRun,
