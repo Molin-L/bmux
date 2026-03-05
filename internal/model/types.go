@@ -9,6 +9,14 @@ type Dependency struct {
 	Direction string
 }
 
+type RunMode string
+
+const (
+	RunModePlan    RunMode = "plan"
+	RunModeSelfRun RunMode = "self_run"
+	RunModeChaos   RunMode = "chaos"
+)
+
 type Issue struct {
 	ID             string
 	Title          string
@@ -33,6 +41,38 @@ type TaskBranchMeta struct {
 	CreatedAt    time.Time `json:"created_at"`
 	Status       string    `json:"status"`
 	PRPromptedAt time.Time `json:"pr_prompted_at,omitempty"`
+}
+
+type TaskRunMeta struct {
+	IssueID         string    `json:"issue_id"`
+	Mode            RunMode   `json:"mode"`
+	Agent           string    `json:"agent"`
+	PaneID          string    `json:"pane_id,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+	ExpectedProcess string    `json:"expected_process,omitempty"`
+	ChaosSessionID  string    `json:"chaos_session_id,omitempty"`
+}
+
+type LiveRun struct {
+	IssueID   string
+	Mode      RunMode
+	PaneID    string
+	Running   bool
+	Agent     string
+	StartedAt time.Time
+}
+
+type ChaosState struct {
+	SessionID        string              `json:"session_id"`
+	Active           bool                `json:"active"`
+	PendingIssueIDs  []string            `json:"pending_issue_ids,omitempty"`
+	Blockers         map[string][]string `json:"blockers,omitempty"`
+	LaunchedIssueIDs []string            `json:"launched_issue_ids,omitempty"`
+	FinishedIssueIDs []string            `json:"finished_issue_ids,omitempty"`
+	ActiveIssueIDs   []string            `json:"active_issue_ids,omitempty"`
+	StartedAt        time.Time           `json:"started_at,omitempty"`
+	UpdatedAt        time.Time           `json:"updated_at,omitempty"`
 }
 
 type CreateIssueRequest struct {

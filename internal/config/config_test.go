@@ -68,6 +68,9 @@ func TestLoadPrecedence_ProjectOverGlobalOverDefault(t *testing.T) {
 	if got, want := cfg.Planning.PromptTemplate, "custom prompt"; got != want {
 		t.Fatalf("planning.prompt_template = %q, want %q", got, want)
 	}
+	if got, want := cfg.Execution.ChaosMaxParallel, 2; got != want {
+		t.Fatalf("execution.chaos_max_parallel = %d, want %d", got, want)
+	}
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -103,6 +106,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("default tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")
 	}
+	if cfg.Execution.ChaosMaxParallel != 2 {
+		t.Fatalf("default execution.chaos_max_parallel = %d, want %d", cfg.Execution.ChaosMaxParallel, 2)
+	}
 }
 
 func TestLoadInvalidSplitDirectionFallsBack(t *testing.T) {
@@ -133,5 +139,40 @@ func TestLoadInvalidSplitDirectionFallsBack(t *testing.T) {
 	}
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")
+	}
+	if cfg.Execution.ChaosMaxParallel != 2 {
+		t.Fatalf("execution.chaos_max_parallel = %d, want %d", cfg.Execution.ChaosMaxParallel, 2)
+	}
+}
+
+func TestLoadExecutionOverrides(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	home := t.TempDir()
+	projectDir := filepath.Join(root, ".bmux")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	projectYAML := []byte("execution:\n  chaos_max_parallel: 4\n  prompts:\n    plan: plan prompt\n    self_run: self-run prompt\n    chaos: chaos prompt\n")
+	if err := os.WriteFile(filepath.Join(projectDir, "config.yaml"), projectYAML, 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	cfg, err := config.Load(root, home)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got, want := cfg.Execution.ChaosMaxParallel, 4; got != want {
+		t.Fatalf("execution.chaos_max_parallel = %d, want %d", got, want)
+	}
+	if got, want := cfg.Execution.Prompts.Plan, "plan prompt"; got != want {
+		t.Fatalf("execution.prompts.plan = %q, want %q", got, want)
+	}
+	if got, want := cfg.Execution.Prompts.SelfRun, "self-run prompt"; got != want {
+		t.Fatalf("execution.prompts.self_run = %q, want %q", got, want)
+	}
+	if got, want := cfg.Execution.Prompts.Chaos, "chaos prompt"; got != want {
+		t.Fatalf("execution.prompts.chaos = %q, want %q", got, want)
 	}
 }

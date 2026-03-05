@@ -163,6 +163,9 @@ func (t *fakeTmux) CapturePane(context.Context, string, int) (string, error) {
 
 func (t *fakeTmux) CurrentPaneID(context.Context) (string, error) { return "%1", nil }
 func (t *fakeTmux) ListPanes(context.Context, string) ([]string, error) {
+	if strings.TrimSpace(t.paneID) != "" {
+		return []string{"%1", t.paneID}, nil
+	}
 	return []string{"%1", "%2"}, nil
 }
 func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) error { return nil }
@@ -642,5 +645,88 @@ func TestStartPlanningPaneCodexAutoTrustAndPromptRetry(t *testing.T) {
 	}
 	if !strings.Contains(tmux.sent[0], "create bd issues directly") {
 		t.Fatalf("expected direct bd-creation prompt in codex launch command: %q", tmux.sent[0])
+	}
+}
+
+func TestStartTaskModePlanUsesSafeFlags(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%8"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-9", Title: "Plan task", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-9-plan-task"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	run, err := svc.StartTaskMode(context.Background(), "bd-9", model.RunModePlan)
+	if err != nil {
+		t.Fatalf("start task mode: %v", err)
+	}
+	if run.Mode != model.RunModePlan {
+		t.Fatalf("unexpected run: %+v", run)
+	}
+	if len(tmux.sent) == 0 {
+		t.Fatalf("expected launch command")
+	}
+	if !strings.Contains(tmux.sent[0], "--sandbox workspace-write") || !strings.Contains(tmux.sent[0], "--ask-for-approval on-request") {
+		t.Fatalf("expected plan safety flags in %q", tmux.sent[0])
+	}
+}
+
+func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%9"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-10", Title: "Self run", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-10-self-run"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	if _, err := svc.StartTaskMode(context.Background(), "bd-10", model.RunModeSelfRun); err != nil {
+		t.Fatalf("start task mode: %v", err)
+	}
+	if len(tmux.sent) == 0 {
+		t.Fatalf("expected launch command")
+	}
+	if !strings.Contains(tmux.sent[0], "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("expected yolo flag in %q", tmux.sent[0])
+	}
+}
+
+func TestStartTaskModeRejectsDuplicateRunningTask(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID: "bd-11", Mode: model.RunModeSelfRun, Agent: "codex",
+		PaneID: "%5", StartedAt: now, UpdatedAt: now, ExpectedProcess: "codex",
+	}); err != nil {
+		t.Fatalf("seed run state: %v", err)
+	}
+
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads:         &fakeBeads{issue: model.Issue{ID: "bd-11", Title: "Dup"}},
+		Git:           &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-11-dup"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: &fakeTmux{paneID: "%5"}, CodexCommand: "codex",
+	})
+
+	_, err := svc.StartTaskMode(context.Background(), "bd-11", model.RunModeSelfRun)
+	if err == nil {
+		t.Fatalf("expected duplicate lock error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "already running in pane %5") {
+		t.Fatalf("unexpected err: %v", err)
 	}
 }

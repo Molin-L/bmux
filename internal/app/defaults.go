@@ -42,20 +42,24 @@ func NewDefaultService(repoRoot string) (*Service, config.Config, error) {
 	runner := execx.New(0)
 	store := state.New(repoRoot)
 	svc := NewService(Options{
-		RepoRoot:       repoRoot,
-		WorktreeDir:    cfg.WorktreeDir,
-		Store:          store,
-		Beads:          beads.NewClient(repoRoot, runner),
-		Git:            gitx.NewClient(runner),
-		Planner:        plannerAdapter{planner: branching.NewPlanner(cfg.BranchPrefix)},
-		PromptBuilder:  pr.Builder{},
-		Tmux:           tmux.NewClient(runner),
-		SplitDirection: cfg.Tmux.SplitDirection,
-		ClaudeCommand:  cfg.Agents.Claude.Command,
-		CodexCommand:   cfg.Agents.Codex.Command,
-		PromptTemplate: cfg.Planning.PromptTemplate,
-		TmuxLayout:     cfg.Tmux.Layout,
-		ControlWidth:   cfg.Tmux.ControlPaneWidth,
+		RepoRoot:               repoRoot,
+		WorktreeDir:            cfg.WorktreeDir,
+		Store:                  store,
+		Beads:                  beads.NewClient(repoRoot, runner),
+		Git:                    gitx.NewClient(runner),
+		Planner:                plannerAdapter{planner: branching.NewPlanner(cfg.BranchPrefix)},
+		PromptBuilder:          pr.Builder{},
+		Tmux:                   tmux.NewClient(runner),
+		SplitDirection:         cfg.Tmux.SplitDirection,
+		ClaudeCommand:          cfg.Agents.Claude.Command,
+		CodexCommand:           cfg.Agents.Codex.Command,
+		PromptTemplate:         cfg.Planning.PromptTemplate,
+		TmuxLayout:             cfg.Tmux.Layout,
+		ControlWidth:           cfg.Tmux.ControlPaneWidth,
+		ChaosMaxParallel:       cfg.Execution.ChaosMaxParallel,
+		ExecutionPlanPrompt:    cfg.Execution.Prompts.Plan,
+		ExecutionSelfRunPrompt: cfg.Execution.Prompts.SelfRun,
+		ExecutionChaosPrompt:   cfg.Execution.Prompts.Chaos,
 	})
 	return svc, cfg, nil
 }

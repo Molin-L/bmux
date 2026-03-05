@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/Molin-L/bmux/internal/model"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -13,6 +15,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.refreshTaskViewport(false)
 		return m, nil
 	case issuesLoadedMsg:
 		m.busy = false
@@ -44,7 +47,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected = 0
 		}
 		m.status = fmt.Sprintf("Loaded %d ready issues", len(m.issues))
+		if strings.TrimSpace(m.selectedTaskIssueID) != "" {
+			if rowIndexByIssueID(m.rows, m.selectedTaskIssueID) < 0 {
+				m.selectedTaskIssueID = ""
+			}
+		}
+		m.refreshTaskViewport(true)
+		return m, m.loadBlockedByCmd()
+	case blockedByLoadedMsg:
+		if msg.err == nil {
+			m.blockedBy = msg.blockedBy
+		}
+		m.refreshTaskViewport(false)
 		return m, nil
+	case runsReconciledMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Run reconciliation failed: %v", msg.err)
+		} else if strings.TrimSpace(msg.status) != "" {
+			m.status = msg.status
+		}
+		m.refreshTaskViewport(false)
+		return m, tea.Batch(m.reconcileRunsCmd(), m.loadBlockedByCmd())
 	case actionResultMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -149,13 +172,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next := nextSelectableRow(m.rows, m.selected, -1)
 			if next >= 0 {
 				m.selected = next
+				m.refreshTaskViewport(true)
 			}
 			return m, nil
 		case "down", "j":
 			next := nextSelectableRow(m.rows, m.selected, 1)
 			if next >= 0 {
 				m.selected = next
+				m.refreshTaskViewport(true)
 			}
+			return m, nil
+		case "pgup":
+			m.scrollViewportByPage(-1)
+			return m, nil
+		case "pgdown":
+			m.scrollViewportByPage(1)
+			return m, nil
+		case "home":
+			m.taskViewportYOffset = 0
+			return m, nil
+		case "end":
+			m.taskViewportYOffset = m.maxViewportOffset()
+			return m, nil
+		case " ":
+			issueID, ok := m.selectedIssueID()
+			if !ok {
+				return m, nil
+			}
+			if m.selectedTaskIssueID == issueID {
+				m.selectedTaskIssueID = ""
+				m.status = "Task selection cleared."
+				m.refreshTaskViewport(false)
+				return m, nil
+			}
+			m.selectedTaskIssueID = issueID
+			m.status = fmt.Sprintf("Selected task: %s", issueID)
+			m.refreshTaskViewport(false)
+			return m, nil
+		case "shift+tab":
+			if len(m.taskModeOptions) == 0 {
+				return m, nil
+			}
+			if m.taskModeSelected > 0 {
+				m.taskModeSelected--
+			} else {
+				m.taskModeSelected = len(m.taskModeOptions) - 1
+			}
+			m.status = fmt.Sprintf("Current mode: %s", modeLabel(m.taskModeOptions[m.taskModeSelected]))
 			return m, nil
 		case "r":
 			m.busy = true
@@ -193,18 +256,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
-			issueID, ok := m.selectedIssueID()
-			if !ok {
+			if len(m.taskModeOptions) == 0 {
 				return m, nil
 			}
+			mode := m.taskModeOptions[m.taskModeSelected]
 			m.busy = true
 			m.prompt = ""
+			if mode == model.RunModeChaos {
+				return m, func() tea.Msg {
+					sessionID, err := m.svc.StartChaos(context.Background())
+					if err != nil {
+						return actionResultMsg{err: err}
+					}
+					return actionResultMsg{status: fmt.Sprintf("Chaos started: %s", sessionID)}
+				}
+			}
+			issueID := strings.TrimSpace(m.selectedTaskIssueID)
+			if issueID == "" {
+				m.busy = false
+				m.status = "No task selected. Press Space to select a task."
+				return m, nil
+			}
 			return m, func() tea.Msg {
-				meta, err := m.svc.OpenTask(context.Background(), issueID)
+				run, err := m.svc.StartTaskMode(context.Background(), issueID, mode)
 				if err != nil {
 					return actionResultMsg{err: err}
 				}
-				return actionResultMsg{status: fmt.Sprintf("Task %s mapped to %s", issueID, meta.Branch)}
+				return actionResultMsg{status: fmt.Sprintf("Task %s started in %s mode (pane %s)", issueID, mode, run.PaneID), paneID: run.PaneID}
 			}
 		case "p":
 			if m.busy {
@@ -278,6 +356,35 @@ func (m Model) loadIssuesCmd() tea.Cmd {
 	}
 }
 
+func (m Model) reconcileRunsCmd() tea.Cmd {
+	return tea.Tick(1*time.Second, func(time.Time) tea.Msg {
+		if m.svc == nil {
+			return runsReconciledMsg{}
+		}
+		if err := m.svc.ReconcileRuns(context.Background()); err != nil {
+			return runsReconciledMsg{err: err}
+		}
+		status, done, err := m.svc.TickChaos(context.Background())
+		if err != nil {
+			return runsReconciledMsg{err: err}
+		}
+		if done {
+			return runsReconciledMsg{}
+		}
+		return runsReconciledMsg{status: status}
+	})
+}
+
+func (m Model) loadBlockedByCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		if m.svc == nil || len(m.issues) == 0 {
+			return blockedByLoadedMsg{blockedBy: map[string]string{}}
+		}
+		blockedBy, err := m.svc.ComputeBlockedBy(context.Background(), m.issues)
+		return blockedByLoadedMsg{blockedBy: blockedBy, err: err}
+	})
+}
+
 func unavailableIssuesStatus(reason string) string {
 	if reason == "" {
 		return "No ready issues. Issue source is unavailable."
@@ -291,4 +398,101 @@ func (m Model) selectedIssueID() (string, bool) {
 		return "", false
 	}
 	return issue.ID, true
+}
+
+func (m *Model) taskViewportSize() (int, int) {
+	width := m.taskViewportWidth
+	if m.width > 0 {
+		width = m.width - panelStyle.GetHorizontalFrameSize()
+	}
+	if width <= 0 {
+		width = 96
+	}
+	if width < 48 {
+		width = 48
+	}
+
+	height := m.taskViewportHeight
+	if m.height > 0 {
+		reserved := 6
+		if m.busy {
+			reserved++
+		}
+		if m.status != "" {
+			reserved++
+		}
+		if m.pendingPaneID != "" {
+			reserved++
+		}
+		if m.errorHint != "" {
+			reserved++
+		}
+		if m.prompt != "" {
+			reserved += 6
+		}
+		if m.mode == modeAgentSelect || m.mode == modePlanConfirm {
+			reserved += 5
+		}
+		height = m.height - reserved - panelStyle.GetVerticalFrameSize()
+	}
+	if height <= 0 {
+		height = 18
+	}
+	if height < 6 {
+		height = 6
+	}
+	return width, height
+}
+
+func (m *Model) refreshTaskViewport(ensureSelection bool) {
+	width, height := m.taskViewportSize()
+	m.taskViewportWidth = width
+	m.taskViewportHeight = height
+	render := m.renderTasksContent(width)
+	maxOffset := max(0, render.lineCount-height)
+	if ensureSelection && m.selected >= 0 && m.selected < len(render.rowStarts) {
+		start := render.rowStarts[m.selected]
+		end := render.rowEnds[m.selected]
+		if start >= 0 {
+			if start < m.taskViewportYOffset {
+				m.taskViewportYOffset = start
+			}
+			bottom := m.taskViewportYOffset + height - 1
+			if end > bottom {
+				m.taskViewportYOffset = end - height + 1
+			}
+		}
+	}
+	if m.taskViewportYOffset < 0 {
+		m.taskViewportYOffset = 0
+	}
+	if m.taskViewportYOffset > maxOffset {
+		m.taskViewportYOffset = maxOffset
+	}
+}
+
+func (m *Model) maxViewportOffset() int {
+	width, height := m.taskViewportSize()
+	render := m.renderTasksContent(width)
+	return max(0, render.lineCount-height)
+}
+
+func (m *Model) scrollViewportByPage(direction int) {
+	_, height := m.taskViewportSize()
+	if height < 2 {
+		height = 2
+	}
+	step := height - 1
+	if direction < 0 {
+		m.taskViewportYOffset -= step
+	} else {
+		m.taskViewportYOffset += step
+	}
+	maxOffset := m.maxViewportOffset()
+	if m.taskViewportYOffset < 0 {
+		m.taskViewportYOffset = 0
+	}
+	if m.taskViewportYOffset > maxOffset {
+		m.taskViewportYOffset = maxOffset
+	}
 }

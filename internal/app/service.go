@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Molin-L/bmux/internal/beads"
 	"github.com/Molin-L/bmux/internal/model"
+	"github.com/Molin-L/bmux/internal/promptx"
 	"github.com/Molin-L/bmux/internal/state"
 )
 
@@ -85,20 +87,24 @@ type HierarchyResult struct {
 }
 
 type Options struct {
-	RepoRoot       string
-	WorktreeDir    string
-	Store          *state.Store
-	Beads          BeadsClient
-	Git            GitClient
-	Planner        BranchPlanner
-	PromptBuilder  PRPromptBuilder
-	Tmux           TmuxClient
-	SplitDirection string
-	ClaudeCommand  string
-	CodexCommand   string
-	PromptTemplate string
-	TmuxLayout     string
-	ControlWidth   int
+	RepoRoot               string
+	WorktreeDir            string
+	Store                  *state.Store
+	Beads                  BeadsClient
+	Git                    GitClient
+	Planner                BranchPlanner
+	PromptBuilder          PRPromptBuilder
+	Tmux                   TmuxClient
+	SplitDirection         string
+	ClaudeCommand          string
+	CodexCommand           string
+	PromptTemplate         string
+	TmuxLayout             string
+	ControlWidth           int
+	ChaosMaxParallel       int
+	ExecutionPlanPrompt    string
+	ExecutionSelfRunPrompt string
+	ExecutionChaosPrompt   string
 }
 
 type DoctorReport struct {
@@ -118,22 +124,38 @@ type IssueSourceState struct {
 }
 
 type Service struct {
-	repoRoot       string
-	worktreeDir    string
-	store          *state.Store
-	beads          BeadsClient
-	git            GitClient
-	planner        BranchPlanner
-	promptBuilder  PRPromptBuilder
-	tmux           TmuxClient
-	splitDirection string
-	tmuxLayout     string
-	controlWidth   int
-	agentCommands  map[string]string
-	promptTemplate string
+	repoRoot         string
+	worktreeDir      string
+	store            *state.Store
+	beads            BeadsClient
+	git              GitClient
+	planner          BranchPlanner
+	promptBuilder    PRPromptBuilder
+	tmux             TmuxClient
+	splitDirection   string
+	tmuxLayout       string
+	controlWidth     int
+	agentCommands    map[string]string
+	promptTemplate   string
+	chaosMaxParallel int
+	executionPrompts executionPrompts
+}
+
+type executionPrompts struct {
+	plan    string
+	selfRun string
+	chaos   string
+}
+
+type RunSummary struct {
+	Running     int
+	Launched    int
+	Finished    int
+	ActiveChaos bool
 }
 
 func NewService(opts Options) *Service {
+	planPrompt, selfRunPrompt, chaosPrompt := executionPromptTemplates(opts.ExecutionPlanPrompt, opts.ExecutionSelfRunPrompt, opts.ExecutionChaosPrompt)
 	return &Service{
 		repoRoot:       opts.RepoRoot,
 		worktreeDir:    opts.WorktreeDir,
@@ -150,7 +172,13 @@ func NewService(opts Options) *Service {
 			"claude": strings.TrimSpace(opts.ClaudeCommand),
 			"codex":  strings.TrimSpace(opts.CodexCommand),
 		},
-		promptTemplate: planPromptTemplate(opts.PromptTemplate),
+		promptTemplate:   planPromptTemplate(opts.PromptTemplate),
+		chaosMaxParallel: normalizeChaosMaxParallel(opts.ChaosMaxParallel),
+		executionPrompts: executionPrompts{
+			plan:    planPrompt,
+			selfRun: selfRunPrompt,
+			chaos:   chaosPrompt,
+		},
 	}
 }
 
@@ -175,11 +203,31 @@ func normalizeControlWidth(v int) int {
 	return v
 }
 
+func normalizeChaosMaxParallel(v int) int {
+	if v <= 0 {
+		return 2
+	}
+	return v
+}
+
 func planPromptTemplate(v string) string {
 	if strings.TrimSpace(v) != "" {
 		return v
 	}
 	return defaultPlanPromptTemplate
+}
+
+func executionPromptTemplates(plan, selfRun, chaos string) (string, string, string) {
+	if strings.TrimSpace(plan) == "" {
+		plan = defaultModePlanPromptTemplate
+	}
+	if strings.TrimSpace(selfRun) == "" {
+		selfRun = defaultModeSelfRunPromptTemplate
+	}
+	if strings.TrimSpace(chaos) == "" {
+		chaos = defaultModeChaosPromptTemplate
+	}
+	return plan, selfRun, chaos
 }
 
 func (s *Service) ReadyIssues(ctx context.Context) ([]model.Issue, error) {
@@ -454,6 +502,529 @@ func (s *Service) CleanupTask(ctx context.Context, issueID string) (model.TaskBr
 
 func (s *Service) GetTaskMeta(issueID string) (model.TaskBranchMeta, bool, error) {
 	return s.store.ByIssueID(issueID)
+}
+
+func (s *Service) GetLiveRun(issueID string) (model.LiveRun, bool, error) {
+	meta, ok, err := s.store.RunLockByIssueID(issueID)
+	if err != nil {
+		return model.LiveRun{}, false, err
+	}
+	if !ok {
+		return model.LiveRun{}, false, nil
+	}
+	return model.LiveRun{
+		IssueID:   meta.IssueID,
+		Mode:      meta.Mode,
+		PaneID:    meta.PaneID,
+		Running:   true,
+		Agent:     meta.Agent,
+		StartedAt: meta.StartedAt,
+	}, true, nil
+}
+
+func (s *Service) GetTaskRunMeta(issueID string) (model.TaskRunMeta, bool, error) {
+	return s.store.RunLockByIssueID(issueID)
+}
+
+func (s *Service) GetChaosState() (model.ChaosState, bool, error) {
+	return s.store.ChaosState()
+}
+
+func (s *Service) RunSummary(issueIDs []string) (RunSummary, error) {
+	runs, err := s.store.RunLockAll()
+	if err != nil {
+		return RunSummary{}, err
+	}
+	allowed := map[string]struct{}{}
+	for _, issueID := range issueIDs {
+		if v := strings.TrimSpace(issueID); v != "" {
+			allowed[v] = struct{}{}
+		}
+	}
+	sum := RunSummary{}
+	for _, run := range runs {
+		if len(allowed) > 0 {
+			if _, ok := allowed[run.IssueID]; !ok {
+				continue
+			}
+		}
+		sum.Running++
+	}
+	if chaos, ok, err := s.store.ChaosState(); err == nil && ok && chaos.Active {
+		sum.ActiveChaos = true
+		sum.Launched = len(dedupeStrings(chaos.LaunchedIssueIDs))
+		sum.Finished = len(dedupeStrings(chaos.FinishedIssueIDs))
+	}
+	return sum, nil
+}
+
+func (s *Service) ComputeBlockedBy(ctx context.Context, issues []model.Issue) (map[string]string, error) {
+	blockedBy := map[string]string{}
+	if len(issues) == 0 {
+		return blockedBy, nil
+	}
+
+	issueSet := map[string]struct{}{}
+	for _, issue := range issues {
+		if v := strings.TrimSpace(issue.ID); v != "" {
+			issueSet[v] = struct{}{}
+		}
+	}
+
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		candidates := make([]string, 0, 3)
+		if parentID := strings.TrimSpace(issue.ParentID); parentID != "" && parentID != issueID {
+			if _, ok := issueSet[parentID]; ok {
+				candidates = append(candidates, parentID)
+			}
+		}
+
+		deps := issue.Dependencies
+		if len(deps) == 0 {
+			if fetched, depErr := s.beads.Dependencies(ctx, issueID); depErr == nil {
+				deps = fetched
+			}
+		}
+		for _, dep := range deps {
+			if dep.Type != "blocks" || dep.Direction != "outgoing" {
+				continue
+			}
+			blockerID := strings.TrimSpace(dep.IssueID)
+			if blockerID == "" || blockerID == issueID {
+				continue
+			}
+			if _, ok := issueSet[blockerID]; ok {
+				candidates = append(candidates, blockerID)
+			}
+		}
+
+		for _, blockerID := range dedupeStrings(candidates) {
+			blockedBy[issueID] = blockerID
+			break
+		}
+	}
+	return blockedBy, nil
+}
+
+func (s *Service) StartTaskMode(ctx context.Context, issueID string, mode model.RunMode) (model.TaskRunMeta, error) {
+	return s.startTaskModeInternal(ctx, issueID, mode, "", false)
+}
+
+func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID string, allowQueued bool) (model.TaskRunMeta, error) {
+	_ = allowQueued
+	if mode != model.RunModePlan && mode != model.RunModeSelfRun && mode != model.RunModeChaos {
+		return model.TaskRunMeta{}, fmt.Errorf("unsupported run mode: %s", mode)
+	}
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return model.TaskRunMeta{}, errors.New("issue id is required")
+	}
+	if s.tmux == nil {
+		return model.TaskRunMeta{}, errors.New("tmux integration is not configured")
+	}
+
+	_ = s.ReconcileRunLocks(ctx)
+	if existing, ok, err := s.store.RunLockByIssueID(issueID); err == nil && ok {
+		paneID := strings.TrimSpace(existing.PaneID)
+		if paneID == "" {
+			paneID = "(unknown)"
+		}
+		return model.TaskRunMeta{}, fmt.Errorf("task already running in pane %s", paneID)
+	}
+
+	taskMeta, err := s.OpenTask(ctx, issueID)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	issue, err := s.beads.Show(ctx, issueID)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	deps, _ := s.beads.Dependencies(ctx, issueID)
+	issue.Dependencies = deps
+
+	prompt := s.renderModePrompt(mode, issue, taskMeta)
+	paneID, err := s.createPlanningPane(ctx)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	cmd, _, err := s.resolveAgentCommand("codex")
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	launchCmd, err := s.buildCodexModeCommand(cmd, prompt, mode, issueID)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	if err := s.tmux.SendKeys(ctx, paneID, launchCmd, true); err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	_ = s.waitForPaneCommand(ctx, paneID, "codex", 5*time.Second)
+
+	content, _ := s.tmux.CapturePane(ctx, paneID, 100)
+	if hasTrustPrompt(content) {
+		_ = s.tmux.SendKeys(ctx, paneID, "", true)
+		time.Sleep(200 * time.Millisecond)
+		again, _ := s.tmux.CapturePane(ctx, paneID, 100)
+		if hasTrustPrompt(again) {
+			_ = s.tmux.SendKeys(ctx, paneID, "y", true)
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	now := time.Now().UTC()
+	run := model.TaskRunMeta{
+		IssueID:         issueID,
+		Mode:            mode,
+		Agent:           "codex",
+		PaneID:          paneID,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		ExpectedProcess: "codex",
+		ChaosSessionID:  chaosSessionID,
+	}
+	if err := s.store.RunLockUpsert(run); err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	return run, nil
+}
+
+func (s *Service) StartChaos(ctx context.Context) (string, error) {
+	issues, sourceState, err := s.ReadyIssuesState(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !sourceState.Available {
+		if sourceState.Reason == "" {
+			return "", errors.New("ready issues source is unavailable")
+		}
+		return "", fmt.Errorf("ready issues source is unavailable: %s", sourceState.Reason)
+	}
+	if len(issues) == 0 {
+		return "", errors.New("no ready issues for chaos mode")
+	}
+	sessionID := fmt.Sprintf("chaos-%d", time.Now().UTC().UnixNano())
+	now := time.Now().UTC()
+	chaos := model.ChaosState{
+		SessionID:        sessionID,
+		Active:           true,
+		LaunchedIssueIDs: []string{},
+		FinishedIssueIDs: []string{},
+		ActiveIssueIDs:   []string{},
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	if err := s.store.SetChaosState(&chaos); err != nil {
+		return "", err
+	}
+	return sessionID, nil
+}
+
+func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
+	chaos, ok, err := s.store.ChaosState()
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || !chaos.Active {
+		return "Chaos idle", true, nil
+	}
+
+	if err := s.ReconcileRunLocks(ctx); err != nil {
+		return "", false, err
+	}
+
+	runList, err := s.store.RunLockAll()
+	if err != nil {
+		return "", false, err
+	}
+	runs := map[string]model.TaskRunMeta{}
+	for _, run := range runList {
+		runs[run.IssueID] = run
+	}
+	launchedSet := stringsToSet(chaos.LaunchedIssueIDs)
+	finishedSet := stringsToSet(chaos.FinishedIssueIDs)
+	activeSet := stringsToSet(chaos.ActiveIssueIDs)
+
+	for issueID := range activeSet {
+		run, exists := runs[issueID]
+		if !exists || run.ChaosSessionID != chaos.SessionID {
+			delete(activeSet, issueID)
+			finishedSet[issueID] = struct{}{}
+		}
+	}
+	for _, run := range runs {
+		if run.ChaosSessionID != chaos.SessionID {
+			continue
+		}
+		activeSet[run.IssueID] = struct{}{}
+		launchedSet[run.IssueID] = struct{}{}
+	}
+
+	readyIssues, sourceState, err := s.ReadyIssuesState(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if !sourceState.Available {
+		return "Chaos paused: ready issues source unavailable", false, nil
+	}
+
+	issueSet := map[string]model.Issue{}
+	for _, issue := range readyIssues {
+		if strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		issueSet[issue.ID] = issue
+	}
+
+	runningCount := 0
+	for issueID := range activeSet {
+		if _, ok := issueSet[issueID]; ok {
+			runningCount++
+		}
+	}
+	capacity := s.chaosMaxParallel - runningCount
+	if capacity < 0 {
+		capacity = 0
+	}
+
+	queued := 0
+	blocked := 0
+	for _, issue := range readyIssues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, done := finishedSet[issueID]; done {
+			continue
+		}
+		if _, active := activeSet[issueID]; active {
+			continue
+		}
+
+		blockers := make([]string, 0, 2)
+		if parentID := strings.TrimSpace(issue.ParentID); parentID != "" {
+			if _, ok := issueSet[parentID]; ok {
+				blockers = append(blockers, parentID)
+			}
+		}
+		deps, _ := s.beads.Dependencies(ctx, issueID)
+		for _, dep := range deps {
+			if dep.Type != "blocks" || dep.Direction != "outgoing" {
+				continue
+			}
+			blockerID := strings.TrimSpace(dep.IssueID)
+			if blockerID == "" {
+				continue
+			}
+			if _, ok := issueSet[blockerID]; ok {
+				blockers = append(blockers, blockerID)
+			}
+		}
+
+		ready := true
+		for _, blockerID := range dedupeStrings(blockers) {
+			if _, done := finishedSet[blockerID]; !done {
+				ready = false
+				break
+			}
+		}
+		if !ready {
+			blocked++
+			continue
+		}
+		if capacity <= 0 {
+			queued++
+			continue
+		}
+
+		if _, err := s.startTaskModeInternal(ctx, issueID, model.RunModeChaos, chaos.SessionID, true); err != nil {
+			// Do not relaunch forever within the same chaos session.
+			finishedSet[issueID] = struct{}{}
+			continue
+		}
+		launchedSet[issueID] = struct{}{}
+		activeSet[issueID] = struct{}{}
+		capacity--
+		runningCount++
+	}
+
+	pending := 0
+	for _, issue := range readyIssues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, done := finishedSet[issueID]; done {
+			continue
+		}
+		if _, active := activeSet[issueID]; active {
+			continue
+		}
+		pending++
+	}
+	done := pending == 0 && runningCount == 0
+	chaos.Active = !done
+	chaos.LaunchedIssueIDs = setToSortedSlice(launchedSet)
+	chaos.FinishedIssueIDs = setToSortedSlice(finishedSet)
+	chaos.ActiveIssueIDs = setToSortedSlice(activeSet)
+	if done {
+		chaos.ActiveIssueIDs = []string{}
+	}
+	chaos.UpdatedAt = time.Now().UTC()
+	if err := s.store.SetChaosState(&chaos); err != nil {
+		return "", false, err
+	}
+	status := fmt.Sprintf(
+		"Chaos %s: running=%d queued=%d blocked=%d finished=%d",
+		chaos.SessionID,
+		runningCount,
+		queued,
+		blocked,
+		len(finishedSet),
+	)
+	return status, done, nil
+}
+
+func (s *Service) ReconcileRunLocks(ctx context.Context) error {
+	runs, err := s.store.RunLockAll()
+	if err != nil {
+		return err
+	}
+	if len(runs) == 0 || s.tmux == nil {
+		return nil
+	}
+	panes, err := s.tmux.ListPanes(ctx, "")
+	if err != nil {
+		return err
+	}
+	paneSet := map[string]struct{}{}
+	for _, pane := range panes {
+		if v := strings.TrimSpace(pane); v != "" {
+			paneSet[v] = struct{}{}
+		}
+	}
+
+	for _, run := range runs {
+		remove := false
+		if strings.TrimSpace(run.PaneID) == "" {
+			remove = true
+		} else if _, ok := paneSet[run.PaneID]; !ok {
+			remove = true
+		} else if strings.TrimSpace(run.ExpectedProcess) != "" {
+			currentCmd, cmdErr := s.tmux.GetPaneCurrentCommand(ctx, run.PaneID)
+			if cmdErr == nil && !strings.EqualFold(strings.TrimSpace(currentCmd), strings.TrimSpace(run.ExpectedProcess)) {
+				remove = true
+			}
+		}
+		if remove {
+			if err := s.store.RunLockDelete(run.IssueID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) ReconcileRuns(ctx context.Context) error {
+	return s.ReconcileRunLocks(ctx)
+}
+
+func (s *Service) renderModePrompt(mode model.RunMode, issue model.Issue, taskMeta model.TaskBranchMeta) string {
+	template := s.executionPrompts.selfRun
+	switch mode {
+	case model.RunModePlan:
+		template = s.executionPrompts.plan
+	case model.RunModeChaos:
+		template = s.executionPrompts.chaos
+	}
+	replacer := strings.NewReplacer(
+		"{{issue_id}}", issue.ID,
+		"{{issue_title}}", issue.Title,
+		"{{issue_description}}", issue.Description,
+		"{{issue_status}}", issue.Status,
+		"{{branch}}", taskMeta.Branch,
+		"{{worktree_path}}", taskMeta.WorktreePath,
+		"{{base_branch}}", taskMeta.BaseBranch,
+		"{{base_commit}}", taskMeta.BaseCommit,
+	)
+	return strings.TrimSpace(replacer.Replace(template))
+}
+
+func (s *Service) buildCodexModeCommand(baseCmd, prompt string, mode model.RunMode, issueID string) (string, error) {
+	baseCmd = strings.TrimSpace(baseCmd)
+	if baseCmd == "" {
+		return "", errors.New("codex command is empty")
+	}
+
+	cmd := baseCmd
+	switch mode {
+	case model.RunModePlan:
+		if !hasCLIFlag(cmd, "--sandbox") {
+			cmd += " --sandbox workspace-write"
+		}
+		if !hasCLIFlag(cmd, "--ask-for-approval") {
+			cmd += " --ask-for-approval on-request"
+		}
+	case model.RunModeSelfRun, model.RunModeChaos:
+		if !hasCLIFlag(cmd, "--dangerously-bypass-approvals-and-sandbox") {
+			cmd += " --dangerously-bypass-approvals-and-sandbox"
+		}
+	default:
+		return "", fmt.Errorf("unsupported run mode: %s", mode)
+	}
+
+	promptArg := shellQuote(prompt)
+	if promptPath, err := promptx.WritePromptFile(s.repoRoot, issueID+"-"+string(mode), prompt); err == nil {
+		snippet := promptx.BuildReadAndDeleteSnippet(promptPath)
+		return fmt.Sprintf(`%s; %s "%s"`, snippet, cmd, "$BMUX_PROMPT_CONTENT"), nil
+	}
+	return cmd + " " + promptArg, nil
+}
+
+func stringsToSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			out[trimmed] = struct{}{}
+		}
+	}
+	return out
+}
+
+func setToSortedSlice(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(m))
+	for v := range m {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (s *Service) StartPlanningPane(ctx context.Context, agent string) (string, string, error) {
@@ -788,5 +1359,53 @@ Workflow:
 Important:
 - This is issue creation only, not implementation planning.
 - Execute bd create commands; do not ask the user to run them manually.`
+
+const defaultModePlanPromptTemplate = `You are running in bmux PLAN mode for one task.
+
+Task:
+- ID: {{issue_id}}
+- Title: {{issue_title}}
+- Status: {{issue_status}}
+- Branch: {{branch}}
+- Worktree: {{worktree_path}}
+
+Rules:
+1) Ask concise clarifying questions first.
+2) Produce an implementation plan only.
+3) Do not edit files unless the user explicitly asks for implementation.
+4) Include acceptance tests and risks.
+`
+
+const defaultModeSelfRunPromptTemplate = `You are running in bmux SELF-RUN mode for one task.
+
+Task:
+- ID: {{issue_id}}
+- Title: {{issue_title}}
+- Status: {{issue_status}}
+- Branch: {{branch}}
+- Worktree: {{worktree_path}}
+
+Execution contract:
+1) Implement only this task.
+2) Run relevant lint/tests before finishing.
+3) Report: changed files, commands, test output summary, and risks/open questions.
+4) Stay within this worktree and branch.
+`
+
+const defaultModeChaosPromptTemplate = `You are running in bmux CHAOS mode for one task from a queue.
+
+Task:
+- ID: {{issue_id}}
+- Title: {{issue_title}}
+- Status: {{issue_status}}
+- Branch: {{branch}}
+- Worktree: {{worktree_path}}
+
+Execution contract:
+1) Implement only this task and do not switch tasks.
+2) Run relevant lint/tests before finishing.
+3) Report: changed files, commands, test output summary, and risks/open questions.
+4) Exit to prompt when done so bmux can schedule next tasks.
+`
 
 var lookPath = exec.LookPath

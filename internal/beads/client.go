@@ -219,12 +219,19 @@ func parseDependency(currentIssueID string, m map[string]any) model.Dependency {
 	fromID := firstString(m, "from_id", "issue_id", "blocked", "blocked_id")
 	toID := firstString(m, "to_id", "depends_on", "depends_on_id", "blocker", "blocker_id", "target_id", "parent_id", "child_id", "related_id")
 
+	direction := ""
 	candidate := ""
 	switch {
 	case fromID == currentIssueID && toID != "":
+		direction = "outgoing"
 		candidate = toID
 	case toID == currentIssueID && fromID != "":
+		direction = "incoming"
 		candidate = fromID
+	case fromID == currentIssueID:
+		direction = "outgoing"
+	case toID == currentIssueID:
+		direction = "incoming"
 	case toID != "":
 		candidate = toID
 	case fromID != "":
@@ -232,9 +239,10 @@ func parseDependency(currentIssueID string, m map[string]any) model.Dependency {
 	}
 
 	return model.Dependency{
-		Type:     depType,
-		IssueID:  candidate,
-		TargetID: candidate,
+		Type:      depType,
+		IssueID:   candidate,
+		TargetID:  candidate,
+		Direction: direction,
 	}
 }
 

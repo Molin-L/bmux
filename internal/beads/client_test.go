@@ -56,6 +56,36 @@ func TestCreateIssueParsesArrayJSON(t *testing.T) {
 	}
 }
 
+func TestParseDependencyDirectionOutgoing(t *testing.T) {
+	t.Parallel()
+	dep := parseDependency("bd-1", map[string]any{
+		"type":    "blocks",
+		"from_id": "bd-1",
+		"to_id":   "bd-2",
+	})
+	if dep.Direction != "outgoing" {
+		t.Fatalf("direction = %q, want outgoing", dep.Direction)
+	}
+	if dep.IssueID != "bd-2" {
+		t.Fatalf("issue id = %q, want bd-2", dep.IssueID)
+	}
+}
+
+func TestParseDependencyDirectionIncoming(t *testing.T) {
+	t.Parallel()
+	dep := parseDependency("bd-2", map[string]any{
+		"type":    "blocks",
+		"from_id": "bd-1",
+		"to_id":   "bd-2",
+	})
+	if dep.Direction != "incoming" {
+		t.Fatalf("direction = %q, want incoming", dep.Direction)
+	}
+	if dep.IssueID != "bd-1" {
+		t.Fatalf("issue id = %q, want bd-1", dep.IssueID)
+	}
+}
+
 func mustContain(t *testing.T, args []string, want string) {
 	t.Helper()
 	for _, a := range args {

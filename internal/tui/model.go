@@ -43,6 +43,16 @@ type hierarchyCreatedMsg struct {
 	err    error
 }
 
+type runsReconciledMsg struct {
+	status string
+	err    error
+}
+
+type blockedByLoadedMsg struct {
+	blockedBy map[string]string
+	err       error
+}
+
 type viewMode int
 
 const (
@@ -56,6 +66,11 @@ type Model struct {
 	issues               []model.Issue
 	rows                 []issueRow
 	selected             int
+	selectedTaskIssueID  string
+	blockedBy            map[string]string
+	taskViewportYOffset  int
+	taskViewportWidth    int
+	taskViewportHeight   int
 	status               string
 	prompt               string
 	busy                 bool
@@ -64,6 +79,8 @@ type Model struct {
 	issueSourceAvailable bool
 	issueSourceReason    string
 	mode                 viewMode
+	taskModeOptions      []model.RunMode
+	taskModeSelected     int
 	agentOptions         []string
 	agentSelected        int
 	pendingPaneID        string
@@ -79,12 +96,16 @@ func NewModel(svc *app.Service) Model {
 		status:               "Loading ready issues...",
 		issueSourceAvailable: true,
 		mode:                 modeMain,
+		taskModeOptions:      []model.RunMode{model.RunModePlan, model.RunModeSelfRun, model.RunModeChaos},
+		blockedBy:            map[string]string{},
+		taskViewportWidth:    96,
+		taskViewportHeight:   18,
 		agentOptions:         []string{"claude", "codex"},
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.loadIssuesCmd()
+	return tea.Batch(m.loadIssuesCmd(), m.reconcileRunsCmd(), m.loadBlockedByCmd())
 }
 
 func Run(svc *app.Service) error {

@@ -90,6 +90,80 @@ func TestNOpensAgentSelector(t *testing.T) {
 	}
 }
 
+func TestEnterDispatchesUsingCurrentMode(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+	m.selectedTaskIssueID = "bd-1"
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command dispatch")
+	}
+	if !got.busy {
+		t.Fatalf("expected busy")
+	}
+}
+
+func TestEnterWithoutSelectedTaskDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch")
+	}
+	if got.busy {
+		t.Fatalf("expected not busy")
+	}
+	if got.status != "No task selected. Press Space to select a task." {
+		t.Fatalf("status = %q", got.status)
+	}
+}
+
+func TestShiftTabCyclesCurrentMode(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.taskModeSelected = 0
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	got := next.(Model)
+	if got.taskModeSelected != len(got.taskModeOptions)-1 {
+		t.Fatalf("taskModeSelected = %d, want %d", got.taskModeSelected, len(got.taskModeOptions)-1)
+	}
+}
+
+func TestSpaceSelectsAndClearsTask(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got := next.(Model)
+	if got.selectedTaskIssueID != "bd-1" {
+		t.Fatalf("selectedTaskIssueID = %q", got.selectedTaskIssueID)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got = next.(Model)
+	if got.selectedTaskIssueID != "" {
+		t.Fatalf("expected selection cleared, got %q", got.selectedTaskIssueID)
+	}
+}
+
 func TestAgentSelectorEscReturnsMain(t *testing.T) {
 	t.Parallel()
 	m := NewModel(&app.Service{})
@@ -232,6 +306,72 @@ func TestSelectionPreservedAcrossRefreshRows(t *testing.T) {
 	issue, ok := selectedIssueFromRows(got.rows, got.selected)
 	if !ok || issue.ID != "bd-2" {
 		t.Fatalf("selected issue = %#v, ok=%v", issue, ok)
+	}
+}
+
+func TestViewportScrollKeys(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-2", Title: "Task 2", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-3", Title: "Task 3", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-4", Title: "Task 4", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-5", Title: "Task 5", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-6", Title: "Task 6", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.taskViewportWidth = 56
+	m.taskViewportHeight = 6
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	got := next.(Model)
+	if got.taskViewportYOffset == 0 {
+		t.Fatalf("expected offset to increase on pgdown")
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyHome})
+	got = next.(Model)
+	if got.taskViewportYOffset != 0 {
+		t.Fatalf("expected home to reset offset, got %d", got.taskViewportYOffset)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	got = next.(Model)
+	if got.taskViewportYOffset == 0 {
+		t.Fatalf("expected end to jump to bottom")
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	got = next.(Model)
+	if got.taskViewportYOffset >= got.maxViewportOffset() {
+		t.Fatalf("expected pgup to move up from bottom")
+	}
+}
+
+func TestViewportFollowsSelectedIssueOnNavigation(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-2", Title: "Task 2", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-3", Title: "Task 3", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-4", Title: "Task 4", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-5", Title: "Task 5", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+	m.taskViewportWidth = 56
+	m.taskViewportHeight = 4
+	m.refreshTaskViewport(true)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(Model)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(Model)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(Model)
+
+	if got.taskViewportYOffset == 0 {
+		t.Fatalf("expected viewport to move down while navigating selection")
 	}
 }
 

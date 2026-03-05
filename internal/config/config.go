@@ -15,13 +15,14 @@ const (
 )
 
 type Config struct {
-	WorktreeDir      string         `yaml:"worktree_dir"`
-	BranchPrefix     string         `yaml:"branch_prefix"`
-	Entrypoint       string         `yaml:"entrypoint"`
-	SubtaskShareMode string         `yaml:"subtask_share_mode"`
-	Agents           AgentsConfig   `yaml:"agents"`
-	Tmux             TmuxConfig     `yaml:"tmux"`
-	Planning         PlanningConfig `yaml:"planning"`
+	WorktreeDir      string          `yaml:"worktree_dir"`
+	BranchPrefix     string          `yaml:"branch_prefix"`
+	Entrypoint       string          `yaml:"entrypoint"`
+	SubtaskShareMode string          `yaml:"subtask_share_mode"`
+	Agents           AgentsConfig    `yaml:"agents"`
+	Tmux             TmuxConfig      `yaml:"tmux"`
+	Planning         PlanningConfig  `yaml:"planning"`
+	Execution        ExecutionConfig `yaml:"execution"`
 }
 
 type AgentsConfig struct {
@@ -45,6 +46,17 @@ type PlanningConfig struct {
 	PromptTemplate string `yaml:"prompt_template"`
 }
 
+type ExecutionConfig struct {
+	ChaosMaxParallel int                    `yaml:"chaos_max_parallel"`
+	Prompts          ExecutionPromptsConfig `yaml:"prompts"`
+}
+
+type ExecutionPromptsConfig struct {
+	Plan    string `yaml:"plan"`
+	SelfRun string `yaml:"self_run"`
+	Chaos   string `yaml:"chaos"`
+}
+
 func defaultConfig(projectRoot string) Config {
 	return Config{
 		WorktreeDir:      filepath.Join(projectRoot, ".worktrees"),
@@ -57,6 +69,9 @@ func defaultConfig(projectRoot string) Config {
 			Layout:           "sidebar",
 			ControlPaneWidth: 40,
 			SessionPrefix:    "bmux-",
+		},
+		Execution: ExecutionConfig{
+			ChaosMaxParallel: 2,
 		},
 	}
 }
@@ -99,6 +114,9 @@ func Load(projectRoot, homeDir string) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Tmux.SessionPrefix) == "" {
 		cfg.Tmux.SessionPrefix = "bmux-"
+	}
+	if cfg.Execution.ChaosMaxParallel <= 0 {
+		cfg.Execution.ChaosMaxParallel = 2
 	}
 
 	return cfg, nil
@@ -164,6 +182,18 @@ func mergeFromFile(cfg *Config, path string) error {
 	}
 	if next.Planning.PromptTemplate != "" {
 		cfg.Planning.PromptTemplate = next.Planning.PromptTemplate
+	}
+	if next.Execution.ChaosMaxParallel != 0 {
+		cfg.Execution.ChaosMaxParallel = next.Execution.ChaosMaxParallel
+	}
+	if next.Execution.Prompts.Plan != "" {
+		cfg.Execution.Prompts.Plan = next.Execution.Prompts.Plan
+	}
+	if next.Execution.Prompts.SelfRun != "" {
+		cfg.Execution.Prompts.SelfRun = next.Execution.Prompts.SelfRun
+	}
+	if next.Execution.Prompts.Chaos != "" {
+		cfg.Execution.Prompts.Chaos = next.Execution.Prompts.Chaos
 	}
 	return nil
 }
