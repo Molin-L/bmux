@@ -126,13 +126,10 @@ func TestViewRendersCurrentMode(t *testing.T) {
 	}
 }
 
-func TestModeLabelUsesApeForApeAndLegacyChaosModes(t *testing.T) {
+func TestModeLabelUsesApeForApeMode(t *testing.T) {
 	t.Parallel()
 	if got, want := modeLabel(model.RunModeApe), "Ape"; got != want {
 		t.Fatalf("modeLabel(ape) = %q, want %q", got, want)
-	}
-	if got, want := modeLabel(model.RunMode("chaos")), "Ape"; got != want {
-		t.Fatalf("modeLabel(chaos) = %q, want %q", got, want)
 	}
 }
 

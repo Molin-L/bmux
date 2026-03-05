@@ -51,14 +51,14 @@ type PlanningConfig struct {
 }
 
 type ExecutionConfig struct {
-	ChaosMaxParallel int                    `yaml:"chaos_max_parallel"`
+	ApeMaxParallel int                    `yaml:"ape_max_parallel"`
 	Prompts          ExecutionPromptsConfig `yaml:"prompts"`
 }
 
 type ExecutionPromptsConfig struct {
 	Plan    string `yaml:"plan"`
 	SelfRun string `yaml:"self_run"`
-	Chaos   string `yaml:"chaos"`
+	Ape   string `yaml:"ape"`
 }
 
 func defaultConfig(projectRoot string) Config {
@@ -77,7 +77,7 @@ func defaultConfig(projectRoot string) Config {
 			MaxPaneWidth:     80,
 		},
 		Execution: ExecutionConfig{
-			ChaosMaxParallel: 2,
+			ApeMaxParallel: 2,
 		},
 	}
 }
@@ -126,8 +126,8 @@ func Load(projectRoot, homeDir string) (Config, error) {
 	if cfg.Tmux.MinPaneWidth > cfg.Tmux.MaxPaneWidth {
 		cfg.Tmux.MaxPaneWidth = cfg.Tmux.MinPaneWidth
 	}
-	if cfg.Execution.ChaosMaxParallel <= 0 {
-		cfg.Execution.ChaosMaxParallel = 2
+	if cfg.Execution.ApeMaxParallel <= 0 {
+		cfg.Execution.ApeMaxParallel = 2
 	}
 
 	return cfg, nil
@@ -200,8 +200,8 @@ func mergeFromFile(cfg *Config, path string) error {
 	if next.Planning.PromptTemplate != "" {
 		cfg.Planning.PromptTemplate = next.Planning.PromptTemplate
 	}
-	if next.Execution.ChaosMaxParallel != 0 {
-		cfg.Execution.ChaosMaxParallel = next.Execution.ChaosMaxParallel
+	if next.Execution.ApeMaxParallel != 0 {
+		cfg.Execution.ApeMaxParallel = next.Execution.ApeMaxParallel
 	}
 	if next.Execution.Prompts.Plan != "" {
 		cfg.Execution.Prompts.Plan = next.Execution.Prompts.Plan
@@ -209,8 +209,8 @@ func mergeFromFile(cfg *Config, path string) error {
 	if next.Execution.Prompts.SelfRun != "" {
 		cfg.Execution.Prompts.SelfRun = next.Execution.Prompts.SelfRun
 	}
-	if next.Execution.Prompts.Chaos != "" {
-		cfg.Execution.Prompts.Chaos = next.Execution.Prompts.Chaos
+	if next.Execution.Prompts.Ape != "" {
+		cfg.Execution.Prompts.Ape = next.Execution.Prompts.Ape
 	}
 	return nil
 }

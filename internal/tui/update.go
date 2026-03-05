@@ -650,7 +650,7 @@ func (m Model) issueRunMode(issueID string) (model.RunMode, bool) {
 }
 
 func isApeRunMode(mode model.RunMode) bool {
-	return mode == model.RunModeApe || mode == model.RunModeChaos
+	return mode == model.RunModeApe
 }
 
 func isClosedStatus(status string) bool {

@@ -15,7 +15,6 @@ const (
 	RunModePlan    RunMode = "plan"
 	RunModeSelfRun RunMode = "self_run"
 	RunModeApe     RunMode = "ape"
-	RunModeChaos   RunMode = "chaos" // legacy value kept for backward compatibility
 )
 
 type Issue struct {
@@ -55,7 +54,7 @@ type TaskRunMeta struct {
 	StartedAt        time.Time `json:"started_at,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 	ExpectedProcess  string    `json:"expected_process,omitempty"`
-	ChaosSessionID   string    `json:"chaos_session_id,omitempty"`
+	ApeSessionID   string    `json:"ape_session_id,omitempty"`
 }
 
 type LiveRun struct {
@@ -69,7 +68,7 @@ type LiveRun struct {
 	StartedAt        time.Time
 }
 
-type ChaosState struct {
+type ApeState struct {
 	SessionID        string              `json:"session_id"`
 	Active           bool                `json:"active"`
 	PendingIssueIDs  []string            `json:"pending_issue_ids,omitempty"`

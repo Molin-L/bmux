@@ -42,7 +42,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStoreRunRoundTripAndChaosState(t *testing.T) {
+func TestStoreRunRoundTripAndApeState(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -71,26 +71,26 @@ func TestStoreRunRoundTripAndChaosState(t *testing.T) {
 		t.Fatalf("unexpected run: %+v", got)
 	}
 
-	chaos := model.ChaosState{
-		SessionID:       "chaos-1",
+	ape := model.ApeState{
+		SessionID:       "ape-1",
 		Active:          true,
 		PendingIssueIDs: []string{"bd-a1"},
 		Blockers:        map[string][]string{"bd-a1": []string{"bd-a0"}},
 		StartedAt:       now,
 		UpdatedAt:       now,
 	}
-	if err := store.SetChaosState(&chaos); err != nil {
-		t.Fatalf("set chaos state: %v", err)
+	if err := store.SetApeState(&ape); err != nil {
+		t.Fatalf("set ape state: %v", err)
 	}
-	gotChaos, ok, err := store.ChaosState()
+	gotApe, ok, err := store.ApeState()
 	if err != nil {
-		t.Fatalf("chaos state: %v", err)
+		t.Fatalf("ape state: %v", err)
 	}
 	if !ok {
-		t.Fatal("expected chaos state")
+		t.Fatal("expected ape state")
 	}
-	if gotChaos.SessionID != "chaos-1" || !gotChaos.Active {
-		t.Fatalf("unexpected chaos state: %+v", gotChaos)
+	if gotApe.SessionID != "ape-1" || !gotApe.Active {
+		t.Fatalf("unexpected ape state: %+v", gotApe)
 	}
 }
 

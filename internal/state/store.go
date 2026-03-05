@@ -19,7 +19,7 @@ const (
 type fileState struct {
 	Tasks map[string]model.TaskBranchMeta `json:"tasks"`
 	Runs  map[string]model.TaskRunMeta    `json:"runs,omitempty"`
-	Chaos *model.ChaosState               `json:"chaos,omitempty"`
+	Ape *model.ApeState               `json:"ape,omitempty"`
 }
 
 type Store struct {
@@ -187,21 +187,21 @@ func (s *Store) RunAll() ([]model.TaskRunMeta, error) {
 	return s.RunLockAll()
 }
 
-func (s *Store) ChaosState() (model.ChaosState, bool, error) {
+func (s *Store) ApeState() (model.ApeState, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	st, err := s.readLocked()
 	if err != nil {
-		return model.ChaosState{}, false, err
+		return model.ApeState{}, false, err
 	}
-	if st.Chaos == nil {
-		return model.ChaosState{}, false, nil
+	if st.Ape == nil {
+		return model.ApeState{}, false, nil
 	}
-	return *st.Chaos, true, nil
+	return *st.Ape, true, nil
 }
 
-func (s *Store) SetChaosState(chaos *model.ChaosState) error {
+func (s *Store) SetApeState(ape *model.ApeState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -209,11 +209,11 @@ func (s *Store) SetChaosState(chaos *model.ChaosState) error {
 	if err != nil {
 		return err
 	}
-	if chaos == nil {
-		st.Chaos = nil
+	if ape == nil {
+		st.Ape = nil
 		return s.writeLocked(st)
 	}
-	dup := *chaos
+	dup := *ape
 	if dup.Blockers == nil {
 		dup.Blockers = map[string][]string{}
 	}
@@ -232,7 +232,7 @@ func (s *Store) SetChaosState(chaos *model.ChaosState) error {
 	if dup.UpdatedAt.IsZero() {
 		dup.UpdatedAt = time.Now().UTC()
 	}
-	st.Chaos = &dup
+	st.Ape = &dup
 	return s.writeLocked(st)
 }
 

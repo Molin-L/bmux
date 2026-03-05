@@ -22,7 +22,7 @@ If assumption #3 is not desired, the Beads sections can be removed and `bmux` ca
 
 ## 3. Product Vision
 
-`bmux` helps developers run many AI coding tasks in parallel without branch chaos by combining:
+`bmux` helps developers run many AI coding tasks in parallel without branch sprawl by combining:
 
 - tmux pane orchestration
 - git worktree isolation

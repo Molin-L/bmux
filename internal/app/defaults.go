@@ -58,10 +58,10 @@ func NewDefaultService(repoRoot string) (*Service, config.Config, error) {
 		ControlWidth:           cfg.Tmux.ControlPaneWidth,
 		MinPaneWidth:           cfg.Tmux.MinPaneWidth,
 		MaxPaneWidth:           cfg.Tmux.MaxPaneWidth,
-		ChaosMaxParallel:       cfg.Execution.ChaosMaxParallel,
+		ApeMaxParallel:       cfg.Execution.ApeMaxParallel,
 		ExecutionPlanPrompt:    cfg.Execution.Prompts.Plan,
 		ExecutionSelfRunPrompt: cfg.Execution.Prompts.SelfRun,
-		ExecutionChaosPrompt:   cfg.Execution.Prompts.Chaos,
+		ExecutionApePrompt:   cfg.Execution.Prompts.Ape,
 	})
 	return svc, cfg, nil
 }

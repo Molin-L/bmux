@@ -360,7 +360,7 @@ func modeLabel(mode model.RunMode) string {
 		return "Plan"
 	case model.RunModeSelfRun:
 		return "Self-run"
-	case model.RunModeApe, model.RunModeChaos:
+	case model.RunModeApe:
 		return "Ape"
 	default:
 		return string(mode)
