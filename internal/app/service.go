@@ -189,7 +189,7 @@ func (s *Service) ReadyIssues(ctx context.Context) ([]model.Issue, error) {
 func (s *Service) ReadyIssuesState(ctx context.Context) ([]model.Issue, IssueSourceState, error) {
 	issues, err := s.beads.Ready(ctx)
 	if err == nil {
-		return issues, IssueSourceState{Available: true}, nil
+		return s.enrichIssueHierarchy(ctx, issues), IssueSourceState{Available: true}, nil
 	}
 	if reason, unavailable := beads.BDUnavailableReason(err); unavailable {
 		return []model.Issue{}, IssueSourceState{Available: false, Reason: reason}, nil
@@ -198,6 +198,96 @@ func (s *Service) ReadyIssuesState(ctx context.Context) ([]model.Issue, IssueSou
 		return []model.Issue{}, IssueSourceState{Available: true}, nil
 	}
 	return nil, IssueSourceState{Available: true}, err
+}
+
+func (s *Service) enrichIssueHierarchy(ctx context.Context, issues []model.Issue) []model.Issue {
+	if len(issues) == 0 {
+		return issues
+	}
+
+	cache := make(map[string]model.Issue, len(issues))
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		cache[issue.ID] = issue
+	}
+
+	enriched := make([]model.Issue, len(issues))
+	for i, issue := range issues {
+		epicID, epicTitle, depth := s.resolveIssueEpic(ctx, issue, cache)
+		issue.EpicID = epicID
+		issue.EpicTitle = epicTitle
+		issue.HierarchyDepth = depth
+		enriched[i] = issue
+	}
+	return enriched
+}
+
+func (s *Service) resolveIssueEpic(ctx context.Context, issue model.Issue, cache map[string]model.Issue) (string, string, int) {
+	current := issue
+	depth := 0
+	visited := map[string]struct{}{}
+
+	for {
+		if strings.EqualFold(strings.TrimSpace(current.IssueType), "epic") {
+			return current.ID, current.Title, depth
+		}
+
+		currentID := strings.TrimSpace(current.ID)
+		if currentID != "" {
+			if _, seen := visited[currentID]; seen {
+				return "", "", depth
+			}
+			visited[currentID] = struct{}{}
+		}
+
+		parentID := resolveParentID(current)
+		if parentID == "" {
+			return "", "", depth
+		}
+
+		depth++
+		if _, seen := visited[parentID]; seen {
+			return "", "", depth
+		}
+
+		parent, ok := cache[parentID]
+		if !ok {
+			fetched, err := s.beads.Show(ctx, parentID)
+			if err != nil {
+				return "", "", depth
+			}
+			parent = fetched
+			cache[parentID] = parent
+		}
+		current = parent
+	}
+}
+
+func resolveParentID(issue model.Issue) string {
+	parentID := strings.TrimSpace(issue.ParentID)
+	if parentID != "" {
+		return parentID
+	}
+
+	for _, dep := range issue.Dependencies {
+		if dep.Type != "parent-child" {
+			continue
+		}
+
+		candidate := strings.TrimSpace(dep.IssueID)
+		if candidate != "" && candidate != issue.ID {
+			return candidate
+		}
+
+		candidate = strings.TrimSpace(dep.TargetID)
+		if candidate != "" && candidate != issue.ID {
+			return candidate
+		}
+	}
+
+	return ""
 }
 
 func (s *Service) OpenTask(ctx context.Context, issueID string) (model.TaskBranchMeta, error) {

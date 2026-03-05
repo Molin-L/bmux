@@ -10,13 +10,18 @@ type Dependency struct {
 }
 
 type Issue struct {
-	ID           string
-	Title        string
-	Description  string
-	Status       string
-	Priority     int
-	Dependencies []Dependency
-	Metadata     map[string]string
+	ID             string
+	Title          string
+	Description    string
+	Status         string
+	Priority       int
+	IssueType      string `json:"issue_type"`
+	ParentID       string `json:"parent"`
+	Dependencies   []Dependency
+	Metadata       map[string]string
+	EpicID         string `json:"-"`
+	EpicTitle      string `json:"-"`
+	HierarchyDepth int    `json:"-"`
 }
 
 type TaskBranchMeta struct {

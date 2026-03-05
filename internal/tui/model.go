@@ -12,6 +12,20 @@ type issuesLoadedMsg struct {
 	err    error
 }
 
+type issueRowKind int
+
+const (
+	issueRowEpicHeader issueRowKind = iota
+	issueRowIssue
+)
+
+type issueRow struct {
+	kind      issueRowKind
+	epicID    string
+	epicTitle string
+	issue     model.Issue
+}
+
 type actionResultMsg struct {
 	status string
 	prompt string
@@ -40,6 +54,7 @@ const (
 type Model struct {
 	svc                  *app.Service
 	issues               []model.Issue
+	rows                 []issueRow
 	selected             int
 	status               string
 	prompt               string

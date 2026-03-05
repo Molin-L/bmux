@@ -20,10 +20,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Failed to load issues: %v", msg.err)
 			return m, nil
 		}
+		prevIssueID, hadPrevSelection := m.selectedIssueID()
 		m.issueSourceAvailable = msg.state.Available
 		m.issueSourceReason = msg.state.Reason
 		m.issues = msg.issues
+		m.rows = buildIssueRows(msg.issues)
 		if len(m.issues) == 0 {
+			m.selected = 0
 			if !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
@@ -31,8 +34,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "No ready issues. Press r to refresh."
 			return m, nil
 		}
-		if m.selected >= len(m.issues) {
-			m.selected = len(m.issues) - 1
+		if hadPrevSelection {
+			m.selected = rowIndexByIssueID(m.rows, prevIssueID)
+		}
+		if m.selected < 0 || m.selected >= len(m.rows) || m.rows[m.selected].kind != issueRowIssue {
+			m.selected = firstSelectableRow(m.rows)
+		}
+		if m.selected < 0 {
+			m.selected = 0
 		}
 		m.status = fmt.Sprintf("Loaded %d ready issues", len(m.issues))
 		return m, nil
@@ -137,13 +146,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
+			next := nextSelectableRow(m.rows, m.selected, -1)
+			if next >= 0 {
+				m.selected = next
 			}
 			return m, nil
 		case "down", "j":
-			if m.selected < len(m.issues)-1 {
-				m.selected++
+			next := nextSelectableRow(m.rows, m.selected, 1)
+			if next >= 0 {
+				m.selected = next
 			}
 			return m, nil
 		case "r":
@@ -175,16 +186,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return planCapturedMsg{plan: plan, err: err}
 			}
 		case "enter":
-			if m.busy || len(m.issues) == 0 {
+			if m.busy {
 				return m, nil
 			}
 			if !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
+			issueID, ok := m.selectedIssueID()
+			if !ok {
+				return m, nil
+			}
 			m.busy = true
 			m.prompt = ""
-			issueID := m.issues[m.selected].ID
 			return m, func() tea.Msg {
 				meta, err := m.svc.OpenTask(context.Background(), issueID)
 				if err != nil {
@@ -193,15 +207,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return actionResultMsg{status: fmt.Sprintf("Task %s mapped to %s", issueID, meta.Branch)}
 			}
 		case "p":
-			if m.busy || len(m.issues) == 0 {
+			if m.busy {
 				return m, nil
 			}
 			if !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
+			issueID, ok := m.selectedIssueID()
+			if !ok {
+				return m, nil
+			}
 			m.busy = true
-			issueID := m.issues[m.selected].ID
 			return m, func() tea.Msg {
 				prompt, err := m.svc.GeneratePRPrompt(context.Background(), issueID)
 				if err != nil {
@@ -210,15 +227,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return actionResultMsg{status: fmt.Sprintf("Generated PR prompt for %s", issueID), prompt: prompt}
 			}
 		case "m":
-			if m.busy || len(m.issues) == 0 {
+			if m.busy {
 				return m, nil
 			}
 			if !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
+			issueID, ok := m.selectedIssueID()
+			if !ok {
+				return m, nil
+			}
 			m.busy = true
-			issueID := m.issues[m.selected].ID
 			return m, func() tea.Msg {
 				meta, err := m.svc.MergeTask(context.Background(), issueID, true)
 				if err != nil {
@@ -227,15 +247,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return actionResultMsg{status: fmt.Sprintf("Merged %s and cleaned branch %s", issueID, meta.Branch)}
 			}
 		case "x":
-			if m.busy || len(m.issues) == 0 {
+			if m.busy {
 				return m, nil
 			}
 			if !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
+			issueID, ok := m.selectedIssueID()
+			if !ok {
+				return m, nil
+			}
 			m.busy = true
-			issueID := m.issues[m.selected].ID
 			return m, func() tea.Msg {
 				meta, err := m.svc.CleanupTask(context.Background(), issueID)
 				if err != nil {
@@ -260,4 +283,12 @@ func unavailableIssuesStatus(reason string) string {
 		return "No ready issues. Issue source is unavailable."
 	}
 	return fmt.Sprintf("No ready issues. Issue source unavailable: %s.", reason)
+}
+
+func (m Model) selectedIssueID() (string, bool) {
+	issue, ok := selectedIssueFromRows(m.rows, m.selected)
+	if !ok {
+		return "", false
+	}
+	return issue.ID, true
 }

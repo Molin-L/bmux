@@ -176,6 +176,65 @@ func TestAgentSelectSuccessClearsHint(t *testing.T) {
 	}
 }
 
+func TestNavigationSkipsEpicHeaders(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.issues = []model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-2", Title: "Task 2", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	}
+	m.rows = buildIssueRows(m.issues)
+	m.selected = firstSelectableRow(m.rows)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(Model)
+	issue, ok := selectedIssueFromRows(got.rows, got.selected)
+	if !ok || issue.ID != "bd-2" {
+		t.Fatalf("selected issue = %#v, ok=%v", issue, ok)
+	}
+}
+
+func TestEnterOnHeaderDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.issueSourceAvailable = true
+	m.issues = []model.Issue{{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1}}
+	m.rows = buildIssueRows(m.issues)
+	m.selected = 0 // header row
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch from header row")
+	}
+	if got.busy {
+		t.Fatalf("expected not busy")
+	}
+}
+
+func TestSelectionPreservedAcrossRefreshRows(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-2", Title: "Task 2", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-2")
+
+	next, _ := m.Update(issuesLoadedMsg{
+		issues: []model.Issue{
+			{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+			{ID: "bd-2", Title: "Task 2", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		},
+		state: app.IssueSourceState{Available: true},
+	})
+	got := next.(Model)
+	issue, ok := selectedIssueFromRows(got.rows, got.selected)
+	if !ok || issue.ID != "bd-2" {
+		t.Fatalf("selected issue = %#v, ok=%v", issue, ok)
+	}
+}
+
 type testErr string
 
 func (e testErr) Error() string { return string(e) }

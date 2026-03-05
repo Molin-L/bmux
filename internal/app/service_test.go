@@ -18,6 +18,9 @@ type fakeBeads struct {
 	ready       []model.Issue
 	readyErr    error
 	deps        []model.Dependency
+	showByID    map[string]model.Issue
+	showErrByID map[string]error
+	showCalls   []string
 	metaWrites  map[string]map[string]string
 	created     []model.CreateIssueRequest
 	createOut   []model.Issue
@@ -36,8 +39,23 @@ func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) {
 func (f *fakeBeads) List(context.Context, map[string]string) ([]model.Issue, error) {
 	return []model.Issue{f.issue}, nil
 }
-func (f *fakeBeads) Show(context.Context, string) (model.Issue, error) {
-	return f.issue, nil
+func (f *fakeBeads) Show(_ context.Context, issueID string) (model.Issue, error) {
+	f.showCalls = append(f.showCalls, issueID)
+	if err, ok := f.showErrByID[issueID]; ok {
+		return model.Issue{}, err
+	}
+	if issue, ok := f.showByID[issueID]; ok {
+		return issue, nil
+	}
+	if f.issue.ID == issueID {
+		return f.issue, nil
+	}
+	if f.issue.ID == "" {
+		out := f.issue
+		out.ID = issueID
+		return out, nil
+	}
+	return model.Issue{ID: issueID}, nil
 }
 func (f *fakeBeads) Dependencies(context.Context, string) ([]model.Dependency, error) {
 	return f.deps, nil
@@ -328,6 +346,147 @@ func TestReadyIssuesStateUnexpectedError(t *testing.T) {
 	}
 	if issues != nil {
 		t.Fatalf("issues = %#v, want nil", issues)
+	}
+}
+
+func TestReadyIssuesStateResolvesEpicAndDepthFromReadyData(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       state.New(root),
+		Beads: &fakeBeads{ready: []model.Issue{
+			{ID: "bd-task", Title: "Task", IssueType: "task", ParentID: "bd-epic"},
+			{ID: "bd-epic", Title: "Epic", IssueType: "epic"},
+			{ID: "bd-sub", Title: "Subtask", IssueType: "task", ParentID: "bd-task"},
+		}},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if !source.Available {
+		t.Fatalf("expected source available")
+	}
+	if issues[0].EpicID != "bd-epic" || issues[0].HierarchyDepth != 1 {
+		t.Fatalf("issue[0] hierarchy = (%q,%d)", issues[0].EpicID, issues[0].HierarchyDepth)
+	}
+	if issues[1].EpicID != "bd-epic" || issues[1].HierarchyDepth != 0 {
+		t.Fatalf("issue[1] hierarchy = (%q,%d)", issues[1].EpicID, issues[1].HierarchyDepth)
+	}
+	if issues[2].EpicID != "bd-epic" || issues[2].HierarchyDepth != 2 {
+		t.Fatalf("issue[2] hierarchy = (%q,%d)", issues[2].EpicID, issues[2].HierarchyDepth)
+	}
+}
+
+func TestReadyIssuesStateFetchesMissingParentChain(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		ready: []model.Issue{
+			{ID: "bd-sub", Title: "Subtask", IssueType: "task", ParentID: "bd-task"},
+		},
+		showByID: map[string]model.Issue{
+			"bd-task": {ID: "bd-task", Title: "Task", IssueType: "task", ParentID: "bd-epic"},
+			"bd-epic": {ID: "bd-epic", Title: "Epic", IssueType: "epic"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         beads,
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, _, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d", len(issues))
+	}
+	if issues[0].EpicID != "bd-epic" || issues[0].HierarchyDepth != 2 {
+		t.Fatalf("hierarchy = (%q,%d)", issues[0].EpicID, issues[0].HierarchyDepth)
+	}
+	if len(beads.showCalls) != 2 || beads.showCalls[0] != "bd-task" || beads.showCalls[1] != "bd-epic" {
+		t.Fatalf("show calls = %#v", beads.showCalls)
+	}
+}
+
+func TestReadyIssuesStateGracefullyFallsBackWhenParentFetchFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		ready: []model.Issue{
+			{ID: "bd-child", Title: "Child", IssueType: "task", ParentID: "bd-parent"},
+		},
+		showErrByID: map[string]error{
+			"bd-parent": errors.New("boom"),
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         beads,
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if !source.Available {
+		t.Fatalf("expected available source")
+	}
+	if issues[0].EpicID != "" {
+		t.Fatalf("epic id = %q, want empty", issues[0].EpicID)
+	}
+	if issues[0].HierarchyDepth != 1 {
+		t.Fatalf("depth = %d, want 1", issues[0].HierarchyDepth)
+	}
+}
+
+func TestReadyIssuesStateHandlesParentCycle(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		ready: []model.Issue{
+			{ID: "bd-a", Title: "A", IssueType: "task", ParentID: "bd-b"},
+		},
+		showByID: map[string]model.Issue{
+			"bd-b": {ID: "bd-b", Title: "B", IssueType: "task", ParentID: "bd-a"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         beads,
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, _, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if issues[0].EpicID != "" {
+		t.Fatalf("epic id = %q, want empty", issues[0].EpicID)
+	}
+	if issues[0].HierarchyDepth != 2 {
+		t.Fatalf("depth = %d, want 2", issues[0].HierarchyDepth)
 	}
 }
 

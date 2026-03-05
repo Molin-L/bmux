@@ -11,19 +11,31 @@ func (m Model) View() string {
 	b.WriteString("bmux - Task Branch Orchestrator\n")
 	b.WriteString("keys: ↑/↓ move | Enter open/create worktree | n new planning pane | c capture plan | p PR prompt | m merge | x cleanup | r refresh | q quit\n\n")
 
-	if len(m.issues) == 0 {
+	if len(m.rows) == 0 {
 		b.WriteString("No issues loaded.\n")
 	} else {
-		for i, issue := range m.issues {
-			prefix := "  "
-			if i == m.selected {
-				prefix = "> "
+		for i, row := range m.rows {
+			switch row.kind {
+			case issueRowEpicHeader:
+				if row.epicID == "" {
+					b.WriteString(fmt.Sprintf("Epic: %s\n", row.epicTitle))
+				} else {
+					b.WriteString(fmt.Sprintf("Epic: %s [%s]\n", row.epicTitle, row.epicID))
+				}
+			case issueRowIssue:
+				prefix := "  "
+				if i == m.selected {
+					prefix = "> "
+				}
+				branch := "(no branch)"
+				if m.svc != nil {
+					if meta, ok, _ := m.svc.GetTaskMeta(row.issue.ID); ok {
+						branch = meta.Branch
+					}
+				}
+				indent := strings.Repeat("  ", max(0, row.issue.HierarchyDepth))
+				b.WriteString(fmt.Sprintf("%s%s- [%s] P%d %-10s %s :: %s\n", prefix, indent, row.issue.ID, row.issue.Priority, row.issue.Status, row.issue.Title, branch))
 			}
-			branch := "(no branch)"
-			if meta, ok, _ := m.svc.GetTaskMeta(issue.ID); ok {
-				branch = meta.Branch
-			}
-			b.WriteString(fmt.Sprintf("%s[%s] P%d %-10s %s :: %s\n", prefix, issue.ID, issue.Priority, issue.Status, issue.Title, branch))
 		}
 	}
 
@@ -56,9 +68,11 @@ func (m Model) View() string {
 	}
 	if m.mode == modePlanConfirm {
 		b.WriteString("\nConfirm hierarchy creation (Enter create, Esc cancel):\n")
-		b.WriteString(fmt.Sprintf("Epic: %s\n", m.extractedPlan.Epic.Title))
-		b.WriteString(fmt.Sprintf("Task: %s\n", m.extractedPlan.Task.Title))
-		b.WriteString(fmt.Sprintf("Subtasks: %d\n", len(m.extractedPlan.Subtasks)))
+		b.WriteString(fmt.Sprintf("- Epic: %s\n", m.extractedPlan.Epic.Title))
+		b.WriteString(fmt.Sprintf("  - Task: %s\n", m.extractedPlan.Task.Title))
+		for _, st := range m.extractedPlan.Subtasks {
+			b.WriteString(fmt.Sprintf("    - Subtask: %s\n", st.Title))
+		}
 	}
 
 	return b.String()
