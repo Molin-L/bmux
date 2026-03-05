@@ -1,0 +1,162 @@
+package beads
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/Molin-L/bmux/internal/execx"
+	"github.com/Molin-L/bmux/internal/model"
+)
+
+type Client struct {
+	repoRoot string
+	runner   *execx.Runner
+}
+
+func NewClient(repoRoot string, runner *execx.Runner) *Client {
+	if runner == nil {
+		runner = execx.New(0)
+	}
+	return &Client{repoRoot: repoRoot, runner: runner}
+}
+
+func (c *Client) Ready(ctx context.Context) ([]model.Issue, error) {
+	var out []model.Issue
+	if err := c.runJSON(ctx, []string{"ready", "--json"}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) List(ctx context.Context, filters map[string]string) ([]model.Issue, error) {
+	args := []string{"list"}
+	keys := make([]string, 0, len(filters))
+	for k := range filters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--"+k, filters[k])
+	}
+	args = append(args, "--json")
+
+	var out []model.Issue
+	if err := c.runJSON(ctx, args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) Show(ctx context.Context, issueID string) (model.Issue, error) {
+	var asArray []model.Issue
+	if err := c.runJSON(ctx, []string{"show", issueID, "--json"}, &asArray); err == nil && len(asArray) > 0 {
+		return asArray[0], nil
+	}
+
+	var out model.Issue
+	if err := c.runJSON(ctx, []string{"show", issueID, "--json"}, &out); err != nil {
+		return model.Issue{}, err
+	}
+	if out.ID == "" {
+		out.ID = issueID
+	}
+	return out, nil
+}
+
+func (c *Client) Dependencies(ctx context.Context, issueID string) ([]model.Dependency, error) {
+	raw := []map[string]any{}
+	if err := c.runJSON(ctx, []string{"dep", "list", issueID, "--json"}, &raw); err != nil {
+		return nil, err
+	}
+
+	deps := make([]model.Dependency, 0, len(raw))
+	for _, m := range raw {
+		d := parseDependency(issueID, m)
+		if d.IssueID == "" {
+			continue
+		}
+		deps = append(deps, d)
+	}
+	return deps, nil
+}
+
+func (c *Client) UpdateMetadata(ctx context.Context, issueID string, metadata map[string]string) error {
+	args := []string{"update", issueID}
+	keys := make([]string, 0, len(metadata))
+	for k := range metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--set-metadata", fmt.Sprintf("%s=%s", k, metadata[k]))
+	}
+	args = append(args, "--json")
+	_, err := c.runner.Run(ctx, c.repoRoot, "bd", args...)
+	return err
+}
+
+func (c *Client) Close(ctx context.Context, issueID, reason string) error {
+	if reason == "" {
+		reason = "Completed via bmux"
+	}
+	_, err := c.runner.Run(ctx, c.repoRoot, "bd", "close", issueID, "--reason", reason, "--json")
+	return err
+}
+
+func (c *Client) runJSON(ctx context.Context, args []string, out any) error {
+	stdout, err := c.runner.Run(ctx, c.repoRoot, "bd", args...)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(stdout) == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(stdout), out); err != nil {
+		return fmt.Errorf("parse bd json (%s): %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func parseDependency(currentIssueID string, m map[string]any) model.Dependency {
+	depType := firstString(m, "type", "dependency_type", "relation")
+	fromID := firstString(m, "from_id", "issue_id", "blocked", "blocked_id")
+	toID := firstString(m, "to_id", "depends_on", "depends_on_id", "blocker", "blocker_id", "target_id", "parent_id", "child_id", "related_id")
+
+	candidate := ""
+	switch {
+	case fromID == currentIssueID && toID != "":
+		candidate = toID
+	case toID == currentIssueID && fromID != "":
+		candidate = fromID
+	case toID != "":
+		candidate = toID
+	case fromID != "":
+		candidate = fromID
+	}
+
+	return model.Dependency{
+		Type:     depType,
+		IssueID:  candidate,
+		TargetID: candidate,
+	}
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if raw, ok := m[k]; ok {
+			switch v := raw.(type) {
+			case string:
+				if strings.TrimSpace(v) != "" {
+					return strings.TrimSpace(v)
+				}
+			case float64:
+				return strconv.FormatInt(int64(v), 10)
+			}
+		}
+	}
+	return ""
+}
