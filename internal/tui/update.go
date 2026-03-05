@@ -36,7 +36,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
-			m.status = "No ready issues. Press r to refresh."
+			m.status = "No issues. Press r to refresh."
 			return m, nil
 		}
 		if hadPrevSelection {
@@ -48,7 +48,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selected < 0 {
 			m.selected = 0
 		}
-		m.status = fmt.Sprintf("Loaded %d ready issues", len(m.issues))
+		m.status = fmt.Sprintf("Loaded %d issues", len(m.issues))
 		m.refreshTaskViewport(true)
 		return m, m.loadBlockedByCmd()
 	case blockedByLoadedMsg:
@@ -304,10 +304,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "No tasks selected. Press Space to select task(s)."
 				return m, nil
 			}
-			items := m.batchLaunchItems(selectedIDs)
+			launchIDs := make([]string, 0, len(selectedIDs))
+			skippedClosed := make([]string, 0, len(selectedIDs))
+			for _, issueID := range selectedIDs {
+				issue, ok := m.issueByID(issueID)
+				if !ok {
+					continue
+				}
+				if isClosedStatus(issue.Status) {
+					skippedClosed = append(skippedClosed, issueID)
+					continue
+				}
+				launchIDs = append(launchIDs, issueID)
+			}
+			if len(launchIDs) == 0 {
+				if len(skippedClosed) > 0 {
+					m.status = fmt.Sprintf("No launchable tasks selected. Skipped closed task(s): %s", strings.Join(skippedClosed, ", "))
+				} else {
+					m.status = "No launchable tasks selected."
+				}
+				return m, nil
+			}
+			items := m.batchLaunchItems(launchIDs)
 			m.batchActive = true
 			m.busy = true
-			m.status = fmt.Sprintf("Launching %d task(s)...", len(items))
+			if len(skippedClosed) > 0 {
+				m.status = fmt.Sprintf("Launching %d task(s); skipped %d closed task(s): %s", len(items), len(skippedClosed), strings.Join(skippedClosed, ", "))
+			} else {
+				m.status = fmt.Sprintf("Launching %d task(s)...", len(items))
+			}
 			return m, m.startBatchLaunchCmd(items, mode)
 		case "p":
 			if m.busy {
@@ -339,6 +364,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			issueID, ok := m.selectedIssueID()
 			if !ok {
+				return m, nil
+			}
+			if issue, issueOK := selectedIssueFromRows(m.rows, m.selected); issueOK && isClosedStatus(issue.Status) {
+				m.status = fmt.Sprintf("Cannot merge closed issue %s.", issueID)
 				return m, nil
 			}
 			m.busy = true
@@ -376,7 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) loadIssuesCmd() tea.Cmd {
 	return func() tea.Msg {
-		issues, state, err := m.svc.ReadyIssuesState(context.Background())
+		issues, state, err := m.svc.ListIssuesState(context.Background())
 		return issuesLoadedMsg{issues: issues, state: state, err: err}
 	}
 }
@@ -418,9 +447,9 @@ func (m Model) spinnerTickCmd() tea.Cmd {
 
 func unavailableIssuesStatus(reason string) string {
 	if reason == "" {
-		return "No ready issues. Issue source is unavailable."
+		return "No issues. Issue source is unavailable."
 	}
-	return fmt.Sprintf("No ready issues. Issue source unavailable: %s.", reason)
+	return fmt.Sprintf("No issues. Issue source unavailable: %s.", reason)
 }
 
 func (m Model) selectedIssueID() (string, bool) {
@@ -429,6 +458,26 @@ func (m Model) selectedIssueID() (string, bool) {
 		return "", false
 	}
 	return issue.ID, true
+}
+
+func (m Model) issueByID(issueID string) (model.Issue, bool) {
+	trimmed := strings.TrimSpace(issueID)
+	if trimmed == "" {
+		return model.Issue{}, false
+	}
+	for _, row := range m.rows {
+		if row.kind != issueRowIssue {
+			continue
+		}
+		if strings.TrimSpace(row.issue.ID) == trimmed {
+			return row.issue, true
+		}
+	}
+	return model.Issue{}, false
+}
+
+func isClosedStatus(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "closed")
 }
 
 func isCompactViewportWidth(width int) bool {
@@ -449,7 +498,7 @@ func compactDetailsHeight(taskAreaHeight int) int {
 func (m *Model) taskViewportLayout() (int, int, int) {
 	width := m.taskViewportWidth
 	if m.width > 0 {
-		width = m.width - panelStyle.GetHorizontalFrameSize()
+		width = m.width - taskListStyle.GetHorizontalFrameSize()
 	}
 	if width <= 0 {
 		width = 96
@@ -482,7 +531,7 @@ func (m *Model) taskViewportLayout() (int, int, int) {
 		if m.mode == modeAgentSelect || m.mode == modePlanConfirm {
 			reserved += 5
 		}
-		height = m.height - reserved - panelStyle.GetVerticalFrameSize()
+		height = m.height - reserved - taskListStyle.GetVerticalFrameSize()
 	}
 	if height <= 0 {
 		height = 18

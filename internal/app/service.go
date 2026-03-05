@@ -308,6 +308,17 @@ func (s *Service) ReadyIssuesState(ctx context.Context) ([]model.Issue, IssueSou
 	return nil, IssueSourceState{Available: true}, err
 }
 
+func (s *Service) ListIssuesState(ctx context.Context) ([]model.Issue, IssueSourceState, error) {
+	issues, err := s.beads.List(ctx, map[string]string{"all": "true", "limit": "0"})
+	if err == nil {
+		return s.enrichIssueHierarchy(ctx, issues), IssueSourceState{Available: true}, nil
+	}
+	if reason, unavailable := beads.BDUnavailableReason(err); unavailable {
+		return []model.Issue{}, IssueSourceState{Available: false, Reason: reason}, nil
+	}
+	return nil, IssueSourceState{Available: true}, err
+}
+
 func (s *Service) enrichIssueHierarchy(ctx context.Context, issues []model.Issue) []model.Issue {
 	if len(issues) == 0 {
 		return issues

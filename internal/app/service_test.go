@@ -17,6 +17,9 @@ type fakeBeads struct {
 	issue       model.Issue
 	ready       []model.Issue
 	readyErr    error
+	list        []model.Issue
+	listErr     error
+	listFilters map[string]string
 	deps        []model.Dependency
 	showByID    map[string]model.Issue
 	showErrByID map[string]error
@@ -44,7 +47,17 @@ func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) {
 	}
 	return []model.Issue{f.issue}, nil
 }
-func (f *fakeBeads) List(context.Context, map[string]string) ([]model.Issue, error) {
+func (f *fakeBeads) List(_ context.Context, filters map[string]string) ([]model.Issue, error) {
+	f.listFilters = map[string]string{}
+	for k, v := range filters {
+		f.listFilters[k] = v
+	}
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.list != nil {
+		return f.list, nil
+	}
 	return []model.Issue{f.issue}, nil
 }
 func (f *fakeBeads) Show(_ context.Context, issueID string) (model.Issue, error) {
@@ -821,6 +834,108 @@ func TestReadyIssuesStateHandlesParentCycle(t *testing.T) {
 	}
 	if issues[0].HierarchyDepth != 2 {
 		t.Fatalf("depth = %d, want 2", issues[0].HierarchyDepth)
+	}
+}
+
+func TestListIssuesStateAllStatusesAndFilters(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		list: []model.Issue{
+			{ID: "bd-inprog", Title: "In Progress", IssueType: "task", Status: "in_progress", ParentID: "bd-epic"},
+			{ID: "bd-epic", Title: "Epic", IssueType: "epic", Status: "open"},
+			{ID: "bd-closed", Title: "Closed", IssueType: "task", Status: "closed", ParentID: "bd-epic"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         beads,
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ListIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("list issues state: %v", err)
+	}
+	if !source.Available {
+		t.Fatalf("expected source available")
+	}
+	if len(issues) != 3 {
+		t.Fatalf("issues len = %d, want 3", len(issues))
+	}
+	if got := beads.listFilters["all"]; got != "true" {
+		t.Fatalf("list all filter = %q, want true", got)
+	}
+	if got := beads.listFilters["limit"]; got != "0" {
+		t.Fatalf("list limit filter = %q, want 0", got)
+	}
+	if issues[2].EpicID != "bd-epic" || issues[2].HierarchyDepth != 1 {
+		t.Fatalf("closed issue hierarchy = (%q,%d)", issues[2].EpicID, issues[2].HierarchyDepth)
+	}
+}
+
+func TestListIssuesStateBDUnavailable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       state.New(root),
+		Beads: &fakeBeads{listErr: &errorsx.CommandError{
+			Command:  "bd",
+			Args:     []string{"list", "--all", "--limit", "0", "--json"},
+			Dir:      root,
+			StdErr:   "command not found: bd",
+			ExitCode: 127,
+			Err:      errors.New("exit status 127"),
+		}},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ListIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("list issues state: %v", err)
+	}
+	if source.Available {
+		t.Fatalf("expected source unavailable")
+	}
+	if source.Reason == "" {
+		t.Fatalf("expected unavailable reason")
+	}
+	if len(issues) != 0 {
+		t.Fatalf("issues len = %d, want 0", len(issues))
+	}
+}
+
+func TestListIssuesStateUnexpectedError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	expected := errors.New("list parse failure")
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         &fakeBeads{listErr: expected},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ListIssuesState(context.Background())
+	if !errors.Is(err, expected) {
+		t.Fatalf("err = %v, want %v", err, expected)
+	}
+	if !source.Available {
+		t.Fatalf("expected source to remain available for unexpected errors")
+	}
+	if issues != nil {
+		t.Fatalf("issues = %#v, want nil", issues)
 	}
 }
 

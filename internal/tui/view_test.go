@@ -284,6 +284,30 @@ func TestViewUsesVerboseModeAtThresholdWidth(t *testing.T) {
 	}
 }
 
+func TestViewRendersStatusHeadersInExpectedOrder(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.taskViewportWidth = 100
+	m.taskViewportHeight = 30
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-open", Title: "Open", Status: "open", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-closed", Title: "Closed", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-running", Title: "Running", Status: "in_progress", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-running")
+
+	out := stripANSI(m.View())
+	inProgIdx := strings.Index(out, "Status: in_progress")
+	openIdx := strings.Index(out, "Status: open")
+	closedIdx := strings.Index(out, "Status: closed")
+	if inProgIdx < 0 || openIdx < 0 || closedIdx < 0 {
+		t.Fatalf("missing status headers:\n%s", out)
+	}
+	if !(inProgIdx < openIdx && openIdx < closedIdx) {
+		t.Fatalf("unexpected status header order: in_progress=%d open=%d closed=%d\n%s", inProgIdx, openIdx, closedIdx, out)
+	}
+}
+
 func stripANSI(s string) string {
 	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return re.ReplaceAllString(s, "")

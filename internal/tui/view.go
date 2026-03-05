@@ -15,9 +15,11 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Padding(0, 1)
 	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
-	panelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	epicStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	taskListStyle    = lipgloss.NewStyle()
+	panelStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	epicStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
+	statusBucketStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("180"))
+	headerStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 
 	selectedRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("236"))
 	statusStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
@@ -73,9 +75,9 @@ func (m Model) View() string {
 		offset = maxOffset
 	}
 	tasks := clipViewport(render.content, offset, height)
-	body = append(body, panelStyle.Render(tasks))
+	body = append(body, taskListStyle.Render(tasks))
 	if isCompactViewportWidth(width) && detailsHeight > 0 {
-		body = append(body, panelStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight)))
+		body = append(body, taskListStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight)))
 	}
 
 	if m.busy {
@@ -130,6 +132,9 @@ func (m Model) renderTasksContent(width int) tasksRender {
 
 	for i, row := range m.rows {
 		switch row.kind {
+		case issueRowStatusHeader:
+			lines = append(lines, statusBucketStyle.Render("Status: "+row.statusLabel))
+			lines = append(lines, "")
 		case issueRowEpicHeader:
 			title := row.epicTitle
 			if strings.TrimSpace(row.epicID) != "" {
@@ -361,7 +366,7 @@ func issueIndentPrefix(rows []issueRow, index int) string {
 func issueSectionBounds(rows []issueRow, index int) (int, int, int) {
 	start := index
 	for i := index - 1; i >= 0; i-- {
-		if rows[i].kind == issueRowEpicHeader {
+		if rows[i].kind == issueRowEpicHeader || rows[i].kind == issueRowStatusHeader {
 			start = i + 1
 			break
 		}
@@ -370,7 +375,7 @@ func issueSectionBounds(rows []issueRow, index int) (int, int, int) {
 
 	end := index
 	for i := index + 1; i < len(rows); i++ {
-		if rows[i].kind == issueRowEpicHeader {
+		if rows[i].kind == issueRowEpicHeader || rows[i].kind == issueRowStatusHeader {
 			break
 		}
 		end = i

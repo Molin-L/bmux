@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/Molin-L/bmux/internal/model"
@@ -8,7 +9,45 @@ import (
 
 const noEpicLabel = "No Epic"
 
+var statusBucketPriority = []string{"in_progress", "open", "blocked", "deferred", "closed"}
+
 func buildIssueRows(issues []model.Issue) []issueRow {
+	if len(issues) == 0 {
+		return nil
+	}
+
+	statusBuckets := map[string][]model.Issue{}
+	for _, issue := range issues {
+		status := normalizedIssueStatus(issue.Status)
+		statusBuckets[status] = append(statusBuckets[status], issue)
+	}
+
+	statusOrder := make([]string, 0, len(statusBuckets))
+	for _, status := range statusBucketPriority {
+		if len(statusBuckets[status]) == 0 {
+			continue
+		}
+		statusOrder = append(statusOrder, status)
+	}
+	unknown := make([]string, 0, len(statusBuckets))
+	for status := range statusBuckets {
+		if isPrioritizedStatus(status) {
+			continue
+		}
+		unknown = append(unknown, status)
+	}
+	sort.Strings(unknown)
+	statusOrder = append(statusOrder, unknown...)
+
+	rows := make([]issueRow, 0, len(issues)+(len(statusOrder)*2))
+	for _, status := range statusOrder {
+		rows = append(rows, issueRow{kind: issueRowStatusHeader, statusLabel: status})
+		rows = append(rows, buildRowsForStatus(statusBuckets[status])...)
+	}
+	return rows
+}
+
+func buildRowsForStatus(issues []model.Issue) []issueRow {
 	if len(issues) == 0 {
 		return nil
 	}
@@ -71,6 +110,23 @@ func buildIssueRows(issues []model.Issue) []issueRow {
 		}
 	}
 	return rows
+}
+
+func normalizedIssueStatus(v string) string {
+	status := strings.ToLower(strings.TrimSpace(v))
+	if status == "" {
+		return "unknown"
+	}
+	return status
+}
+
+func isPrioritizedStatus(status string) bool {
+	for _, v := range statusBucketPriority {
+		if status == v {
+			return true
+		}
+	}
+	return false
 }
 
 func firstSelectableRow(rows []issueRow) int {

@@ -19,7 +19,7 @@ func TestIssuesLoadedNoIssuesAvailable(t *testing.T) {
 	})
 
 	got := next.(Model)
-	if got.status != "No ready issues. Press r to refresh." {
+	if got.status != "No issues. Press r to refresh." {
 		t.Fatalf("status = %q", got.status)
 	}
 }
@@ -34,7 +34,7 @@ func TestIssuesLoadedNoIssuesUnavailable(t *testing.T) {
 	})
 
 	got := next.(Model)
-	want := "No ready issues. Issue source unavailable: bd not found in PATH."
+	want := "No issues. Issue source unavailable: bd not found in PATH."
 	if got.status != want {
 		t.Fatalf("status = %q, want %q", got.status, want)
 	}
@@ -53,7 +53,7 @@ func TestActionWhileSourceUnavailableDoesNotDispatch(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected no command dispatch")
 	}
-	want := "No ready issues. Issue source unavailable: bd not found in PATH."
+	want := "No issues. Issue source unavailable: bd not found in PATH."
 	if got.status != want {
 		t.Fatalf("status = %q, want %q", got.status, want)
 	}
@@ -404,6 +404,101 @@ func TestEnterBatchDispatchesImmediateMixedStart(t *testing.T) {
 	}
 	if !got.busy {
 		t.Fatalf("expected busy true")
+	}
+}
+
+func TestEnterClosedIssueDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-closed", Title: "Closed Task", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-closed": {}}
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch")
+	}
+	if got.busy {
+		t.Fatalf("expected not busy")
+	}
+	if !strings.Contains(got.status, "closed") {
+		t.Fatalf("unexpected status: %q", got.status)
+	}
+}
+
+func TestMergeClosedIssueDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-closed", Title: "Closed Task", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch")
+	}
+	if got.busy {
+		t.Fatalf("expected not busy")
+	}
+	if !strings.Contains(got.status, "closed") {
+		t.Fatalf("unexpected status: %q", got.status)
+	}
+}
+
+func TestEnterBatchSkipsClosedAndLaunchesOpen(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-open", Title: "Open Task", Status: "open", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-closed", Title: "Closed Task", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-open": {}, "bd-closed": {}}
+	m.selected = rowIndexByIssueID(m.rows, "bd-open")
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command dispatch")
+	}
+	if !got.busy {
+		t.Fatalf("expected busy true")
+	}
+	if !strings.Contains(strings.ToLower(got.status), "skipped") {
+		t.Fatalf("expected skipped status, got %q", got.status)
+	}
+}
+
+func TestEnterBatchAllClosedDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-closed", Title: "Closed Task", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-closed": {}}
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch")
+	}
+	if got.busy {
+		t.Fatalf("expected not busy")
+	}
+	if !strings.Contains(strings.ToLower(got.status), "closed") {
+		t.Fatalf("unexpected status: %q", got.status)
 	}
 }
 

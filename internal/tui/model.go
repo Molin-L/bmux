@@ -16,14 +16,16 @@ type issueRowKind int
 
 const (
 	issueRowEpicHeader issueRowKind = iota
+	issueRowStatusHeader
 	issueRowIssue
 )
 
 type issueRow struct {
-	kind      issueRowKind
-	epicID    string
-	epicTitle string
-	issue     model.Issue
+	kind        issueRowKind
+	statusLabel string
+	epicID      string
+	epicTitle   string
+	issue       model.Issue
 }
 
 type actionResultMsg struct {
@@ -114,7 +116,7 @@ type Model struct {
 func NewModel(svc *app.Service) Model {
 	return Model{
 		svc:                  svc,
-		status:               "Loading ready issues...",
+		status:               "Loading issues...",
 		issueSourceAvailable: true,
 		mode:                 modeMain,
 		taskModeOptions:      []model.RunMode{model.RunModePlan, model.RunModeSelfRun, model.RunModeApe},
