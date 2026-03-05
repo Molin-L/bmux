@@ -90,6 +90,21 @@ Defaults:
 - `agents.codex.command`: empty by default; if empty, `bmux` falls back to `codex` from PATH
 - `planning.prompt_template`: built-in template when empty
 
+## Fixture
+
+`examples/beads-sample` is a deterministic Beads fixture repository for manual and scripted `bmux` testing.
+
+Reset fixture state with one command:
+
+```bash
+cd examples/beads-sample
+./reset.sh
+```
+
+`reset.sh` is destructive and always rebuilds from scratch. It wipes local `.beads/`, `.bmux/`, and `.worktrees/`, reinitializes Beads with prefix `bd`, reseeds fixed IDs (`bd-100` to `bd-105`) and dependencies, then recreates a clean baseline git commit.
+
+Fixture seed/schema updates are intentionally non-backward-compatible.
+
 ## Notes
 
 - `bmux` targets current Beads CLI behavior (`bd 0.58.x` baseline).

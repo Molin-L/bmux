@@ -1,0 +1,11 @@
+.beads/
+.bmux/
+.worktrees/
+.beads/dolt-server*.log
+.beads/dolt-server*.pid
+.beads/dolt-server*.port
+.beads/dolt-server*.activity
+.beads/dolt-server*.lock
+.dolt/
+*.db
+AGENTS.md
