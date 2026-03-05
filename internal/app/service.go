@@ -522,12 +522,27 @@ func (s *Service) MergeTask(ctx context.Context, issueID string, cleanup bool) (
 	if err := s.git.Merge(ctx, s.repoRoot, meta.Branch); err != nil {
 		return model.TaskBranchMeta{}, err
 	}
+
+	if err := s.beads.Close(ctx, issueID, "Completed via bmux"); err != nil {
+		meta.Status = "merged_pending_close"
+		if upsertErr := s.store.Upsert(meta); upsertErr != nil {
+			return model.TaskBranchMeta{}, fmt.Errorf("close issue after merge: %v (persist status: %w)", err, upsertErr)
+		}
+		return model.TaskBranchMeta{}, err
+	}
+
 	if cleanup {
-		if err := s.git.RemoveWorktree(ctx, s.repoRoot, meta.WorktreePath); err != nil {
+		shared, err := s.hasOtherActiveRefs(issueID, meta.Branch, meta.WorktreePath)
+		if err != nil {
 			return model.TaskBranchMeta{}, err
 		}
-		if err := s.git.DeleteBranch(ctx, s.repoRoot, meta.Branch); err != nil {
-			return model.TaskBranchMeta{}, err
+		if !shared {
+			if err := s.git.RemoveWorktree(ctx, s.repoRoot, meta.WorktreePath); err != nil {
+				return model.TaskBranchMeta{}, err
+			}
+			if err := s.git.DeleteBranch(ctx, s.repoRoot, meta.Branch); err != nil {
+				return model.TaskBranchMeta{}, err
+			}
 		}
 	}
 
@@ -536,6 +551,34 @@ func (s *Service) MergeTask(ctx context.Context, issueID string, cleanup bool) (
 		return model.TaskBranchMeta{}, err
 	}
 	return meta, nil
+}
+
+func (s *Service) hasOtherActiveRefs(issueID, branch, worktreePath string) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	worktreePath = strings.TrimSpace(worktreePath)
+	if branch == "" && worktreePath == "" {
+		return false, nil
+	}
+
+	metas, err := s.store.All()
+	if err != nil {
+		return false, err
+	}
+	for _, meta := range metas {
+		if strings.TrimSpace(meta.IssueID) == strings.TrimSpace(issueID) {
+			continue
+		}
+		if strings.TrimSpace(meta.Status) != "active" {
+			continue
+		}
+		if branch != "" && strings.TrimSpace(meta.Branch) == branch {
+			return true, nil
+		}
+		if worktreePath != "" && strings.TrimSpace(meta.WorktreePath) == worktreePath {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) CleanupTask(ctx context.Context, issueID string) (model.TaskBranchMeta, error) {
@@ -704,7 +747,7 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 	if pending {
 		return s.startWaitingTask(ctx, issueID, mode, chaosSessionID, blockerID)
 	}
-	claimBeforeStart := !isApeMode(mode)
+	claimBeforeStart := true
 	return s.startRunnableTask(ctx, issueID, mode, chaosSessionID, "", claimBeforeStart)
 }
 

@@ -23,9 +23,16 @@ type fakeBeads struct {
 	showCalls   []string
 	metaWrites  map[string]map[string]string
 	claimed     []string
+	closed      []closeCall
+	closeErr    error
 	created     []model.CreateIssueRequest
 	createOut   []model.Issue
 	createErrAt int
+}
+
+type closeCall struct {
+	issueID string
+	reason  string
 }
 
 func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) {
@@ -82,7 +89,13 @@ func (f *fakeBeads) Claim(_ context.Context, issueID string) error {
 	f.claimed = append(f.claimed, issueID)
 	return nil
 }
-func (f *fakeBeads) Close(context.Context, string, string) error { return nil }
+func (f *fakeBeads) Close(_ context.Context, issueID, reason string) error {
+	f.closed = append(f.closed, closeCall{issueID: issueID, reason: reason})
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	return nil
+}
 
 type fakeGit struct {
 	headBranch    string
@@ -91,8 +104,10 @@ type fakeGit struct {
 	addedBranch   string
 	addedStart    string
 	merged        [][2]string
-	removedPath   string
-	deletedBranch string
+	removedPaths  []string
+	deletedBranch []string
+	removeErr     error
+	deleteErr     error
 }
 
 func (g *fakeGit) CurrentHead(context.Context, string) (string, string, error) {
@@ -104,13 +119,25 @@ func (g *fakeGit) AddWorktree(_ context.Context, _, path, branch, startRef strin
 	g.addedStart = startRef
 	return nil
 }
-func (g *fakeGit) RemoveWorktree(context.Context, string, string) error { return nil }
+func (g *fakeGit) RemoveWorktree(_ context.Context, _ string, path string) error {
+	if g.removeErr != nil {
+		return g.removeErr
+	}
+	g.removedPaths = append(g.removedPaths, path)
+	return nil
+}
 func (g *fakeGit) Merge(_ context.Context, repoPath, branch string) error {
 	g.merged = append(g.merged, [2]string{repoPath, branch})
 	return nil
 }
-func (g *fakeGit) DeleteBranch(context.Context, string, string) error { return nil }
-func (g *fakeGit) Push(context.Context, string, string) error         { return nil }
+func (g *fakeGit) DeleteBranch(_ context.Context, _ string, branch string) error {
+	if g.deleteErr != nil {
+		return g.deleteErr
+	}
+	g.deletedBranch = append(g.deletedBranch, branch)
+	return nil
+}
+func (g *fakeGit) Push(context.Context, string, string) error { return nil }
 
 type fakePlanner struct{ d app.BranchDecision }
 
@@ -343,6 +370,212 @@ func TestOpenTaskReusesExistingBranch(t *testing.T) {
 	}
 	if git.addedBranch != "" {
 		t.Fatalf("expected no new worktree, got %q", git.addedBranch)
+	}
+}
+
+func TestMergeTaskClosesIssueAfterMerge(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	meta := model.TaskBranchMeta{
+		IssueID:      "bd-merge",
+		Branch:       "task/bd-merge",
+		WorktreePath: root + "/.worktrees/task__bd-merge",
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "active",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := store.Upsert(meta); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	beads := &fakeBeads{}
+	git := &fakeGit{}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads: beads, Git: git, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+
+	got, err := svc.MergeTask(context.Background(), "bd-merge", false)
+	if err != nil {
+		t.Fatalf("merge task: %v", err)
+	}
+	if got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if len(git.merged) != 2 {
+		t.Fatalf("merge calls = %#v", git.merged)
+	}
+	if len(beads.closed) != 1 {
+		t.Fatalf("close calls = %#v", beads.closed)
+	}
+	if beads.closed[0].issueID != "bd-merge" || beads.closed[0].reason != "Completed via bmux" {
+		t.Fatalf("unexpected close call: %#v", beads.closed[0])
+	}
+
+	stored, ok, err := store.ByIssueID("bd-merge")
+	if err != nil {
+		t.Fatalf("read stored meta: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected stored meta")
+	}
+	if stored.Status != "merged" {
+		t.Fatalf("stored status = %q, want merged", stored.Status)
+	}
+}
+
+func TestMergeTaskCloseFailurePersistsMergedPendingClose(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	meta := model.TaskBranchMeta{
+		IssueID:      "bd-merge-fail",
+		Branch:       "task/bd-merge-fail",
+		WorktreePath: root + "/.worktrees/task__bd-merge-fail",
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "active",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := store.Upsert(meta); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	beads := &fakeBeads{closeErr: errors.New("bd close failed")}
+	git := &fakeGit{}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads: beads, Git: git, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+
+	_, err := svc.MergeTask(context.Background(), "bd-merge-fail", false)
+	if err == nil {
+		t.Fatalf("expected close error")
+	}
+	if !strings.Contains(err.Error(), "bd close failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(git.merged) != 2 {
+		t.Fatalf("merge calls = %#v", git.merged)
+	}
+	if len(beads.closed) != 1 {
+		t.Fatalf("close calls = %#v", beads.closed)
+	}
+
+	stored, ok, err := store.ByIssueID("bd-merge-fail")
+	if err != nil {
+		t.Fatalf("read stored meta: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected stored meta")
+	}
+	if stored.Status != "merged_pending_close" {
+		t.Fatalf("stored status = %q, want merged_pending_close", stored.Status)
+	}
+}
+
+func TestMergeTaskSkipsCleanupWhenBranchShared(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	sharedBranch := "task/bd-shared"
+	sharedWorktree := root + "/.worktrees/task__bd-shared"
+	first := model.TaskBranchMeta{
+		IssueID:      "bd-shared-1",
+		Branch:       sharedBranch,
+		WorktreePath: sharedWorktree,
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "active",
+		CreatedAt:    time.Now().UTC(),
+	}
+	second := model.TaskBranchMeta{
+		IssueID:      "bd-shared-2",
+		Branch:       sharedBranch,
+		WorktreePath: sharedWorktree,
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "active",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := store.Upsert(first); err != nil {
+		t.Fatalf("seed first: %v", err)
+	}
+	if err := store.Upsert(second); err != nil {
+		t.Fatalf("seed second: %v", err)
+	}
+
+	beads := &fakeBeads{}
+	git := &fakeGit{}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads: beads, Git: git, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+
+	got, err := svc.MergeTask(context.Background(), "bd-shared-1", true)
+	if err != nil {
+		t.Fatalf("merge task: %v", err)
+	}
+	if got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if len(git.removedPaths) != 0 {
+		t.Fatalf("cleanup should be skipped for shared worktree, removed=%#v", git.removedPaths)
+	}
+	if len(git.deletedBranch) != 0 {
+		t.Fatalf("cleanup should be skipped for shared branch, deleted=%#v", git.deletedBranch)
+	}
+}
+
+func TestMergeTaskCleansUpWhenUnshared(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	meta := model.TaskBranchMeta{
+		IssueID:      "bd-cleanup",
+		Branch:       "task/bd-cleanup",
+		WorktreePath: root + "/.worktrees/task__bd-cleanup",
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "active",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := store.Upsert(meta); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+	if err := store.Upsert(model.TaskBranchMeta{
+		IssueID:      "bd-old",
+		Branch:       "task/bd-cleanup",
+		WorktreePath: root + "/.worktrees/task__bd-cleanup",
+		BaseBranch:   "main",
+		BaseCommit:   "abc123",
+		Status:       "merged",
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed old meta: %v", err)
+	}
+
+	beads := &fakeBeads{}
+	git := &fakeGit{}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads: beads, Git: git, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+
+	got, err := svc.MergeTask(context.Background(), "bd-cleanup", true)
+	if err != nil {
+		t.Fatalf("merge task: %v", err)
+	}
+	if got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if len(git.removedPaths) != 1 || git.removedPaths[0] != meta.WorktreePath {
+		t.Fatalf("removed paths = %#v", git.removedPaths)
+	}
+	if len(git.deletedBranch) != 1 || git.deletedBranch[0] != meta.Branch {
+		t.Fatalf("deleted branches = %#v", git.deletedBranch)
 	}
 }
 
@@ -853,6 +1086,28 @@ func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
 	}
 	if !strings.Contains(tmux.sent[0], "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("expected yolo flag in %q", tmux.sent[0])
+	}
+}
+
+func TestStartTaskModeApeClaimsIssue(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%10"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-ape", Title: "Ape run", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-ape-run"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	if _, err := svc.StartTaskMode(context.Background(), "bd-ape", model.RunModeApe); err != nil {
+		t.Fatalf("start task mode: %v", err)
+	}
+	if len(beads.claimed) != 1 || beads.claimed[0] != "bd-ape" {
+		t.Fatalf("expected claim for bd-ape, got %#v", beads.claimed)
 	}
 }
 
