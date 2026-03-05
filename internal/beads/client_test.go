@@ -86,6 +86,24 @@ func TestParseDependencyDirectionIncoming(t *testing.T) {
 	}
 }
 
+func TestClaimBuildsArgs(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{out: `{}`}
+	c := &Client{repoRoot: t.TempDir(), runner: r}
+
+	if err := c.Claim(context.Background(), "bd-9"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls = %d", len(r.calls))
+	}
+	args := r.calls[0]
+	want := []string{"update", "bd-9", "--claim", "--json"}
+	for _, token := range want {
+		mustContain(t, args, token)
+	}
+}
+
 func mustContain(t *testing.T, args []string, want string) {
 	t.Helper()
 	for _, a := range args {

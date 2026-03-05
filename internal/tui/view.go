@@ -41,17 +41,13 @@ type tasksRender struct {
 
 func (m Model) View() string {
 	title := titleStyle.Render("bmux")
-	help := helpStyle.Render("↑/↓ move • PgUp/PgDn/Home/End scroll • Space select task • Shift+Tab cycle mode • Enter start • n legacy planning • c capture • p PR • m merge • x cleanup • r refresh • q quit")
+	help := helpStyle.Render("↑/↓ move • PgUp/PgDn/Home/End scroll • Space select/deselect task(s) • Shift+Tab cycle mode • Enter start • n legacy planning • c capture • p PR • m merge • x cleanup • r refresh • q quit")
 
 	meta := []string{}
 	if len(m.taskModeOptions) > 0 {
 		meta = append(meta, modeBadge(modeLabel(m.taskModeOptions[m.taskModeSelected])))
 	}
-	if strings.TrimSpace(m.selectedTaskIssueID) != "" {
-		meta = append(meta, taskBadge("task "+m.selectedTaskIssueID))
-	} else {
-		meta = append(meta, taskBadge("task (none)"))
-	}
+	meta = append(meta, taskBadge(m.selectedTasksBadgeText()))
 	if !m.issueSourceAvailable {
 		meta = append(meta, warnBadge("source unavailable"))
 	}
@@ -146,7 +142,14 @@ func (m Model) renderTasksContent(width int) tasksRender {
 					branch = meta.Branch
 				}
 				if run, ok := safeGetLiveRun(m.svc, row.issue.ID); ok && run.Running {
-					runState = fmt.Sprintf("running(%s)", run.Mode)
+					if run.Pending {
+						runState = fmt.Sprintf("waiting(%s)", run.Mode)
+						if blockerID := strings.TrimSpace(run.BlockedByIssueID); blockerID != "" {
+							blockedBy = blockerID
+						}
+					} else {
+						runState = fmt.Sprintf("running(%s)", run.Mode)
+					}
 					if strings.TrimSpace(run.PaneID) != "" {
 						paneText = run.PaneID
 					}
@@ -161,7 +164,7 @@ func (m Model) renderTasksContent(width int) tasksRender {
 				selectedCursor = "▶"
 			}
 			taskMark := "○"
-			if strings.TrimSpace(m.selectedTaskIssueID) == strings.TrimSpace(row.issue.ID) {
+			if _, selected := m.selectedTaskIssueIDs[strings.TrimSpace(row.issue.ID)]; selected {
 				taskMark = "●"
 			}
 
@@ -223,6 +226,21 @@ func (m Model) renderPlanConfirm() string {
 		lines = append(lines, "    - Subtask: "+st.Title)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) selectedTasksBadgeText() string {
+	count := len(m.selectedTaskIssueIDs)
+	switch count {
+	case 0:
+		return "task (none)"
+	case 1:
+		for _, issueID := range m.issueIDsInRowOrder(m.selectedTaskIssueIDs) {
+			return "task " + issueID
+		}
+		return "task (none)"
+	default:
+		return fmt.Sprintf("tasks %d selected", count)
+	}
 }
 
 func modeBadge(value string) string {

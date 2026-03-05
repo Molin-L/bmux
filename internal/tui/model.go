@@ -53,6 +53,13 @@ type blockedByLoadedMsg struct {
 	err       error
 }
 
+type batchLaunchResultMsg struct {
+	mode    model.RunMode
+	started map[string]string
+	waiting map[string]string
+	failed  map[string]string
+}
+
 type viewMode int
 
 const (
@@ -66,8 +73,9 @@ type Model struct {
 	issues               []model.Issue
 	rows                 []issueRow
 	selected             int
-	selectedTaskIssueID  string
+	selectedTaskIssueIDs map[string]struct{}
 	blockedBy            map[string]string
+	batchActive          bool
 	taskViewportYOffset  int
 	taskViewportWidth    int
 	taskViewportHeight   int
@@ -97,6 +105,7 @@ func NewModel(svc *app.Service) Model {
 		issueSourceAvailable: true,
 		mode:                 modeMain,
 		taskModeOptions:      []model.RunMode{model.RunModePlan, model.RunModeSelfRun, model.RunModeChaos},
+		selectedTaskIssueIDs: map[string]struct{}{},
 		blockedBy:            map[string]string{},
 		taskViewportWidth:    96,
 		taskViewportHeight:   18,

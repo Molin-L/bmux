@@ -4,9 +4,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Molin-L/bmux/internal/app"
 	"github.com/Molin-L/bmux/internal/model"
+	"github.com/Molin-L/bmux/internal/state"
 )
 
 func TestViewRendersTreeRowsWithSelectionAndBlockedBy(t *testing.T) {
@@ -21,7 +23,7 @@ func TestViewRendersTreeRowsWithSelectionAndBlockedBy(t *testing.T) {
 	})
 	m.blockedBy = map[string]string{"bd-task": "bd-parent"}
 	m.selected = rowIndexByIssueID(m.rows, "bd-task")
-	m.selectedTaskIssueID = "bd-task"
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-task": {}}
 
 	out := stripANSI(m.View())
 	if !strings.Contains(out, "Tasks (wrapped, no truncation)") {
@@ -113,7 +115,7 @@ func TestViewRendersCurrentMode(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
 	m.taskModeSelected = 1
-	m.selectedTaskIssueID = "bd-1"
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-1": {}}
 
 	out := stripANSI(m.View())
 	if !strings.Contains(out, "mode Self-run") {
@@ -121,6 +123,63 @@ func TestViewRendersCurrentMode(t *testing.T) {
 	}
 	if !strings.Contains(out, "task bd-1") {
 		t.Fatalf("missing selected task:\n%s", out)
+	}
+}
+
+func TestViewRendersMultiSelectBadgeAndHelpText(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.selectedTaskIssueIDs = map[string]struct{}{
+		"bd-1": {},
+		"bd-2": {},
+	}
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "tasks 2 selected") {
+		t.Fatalf("missing multi-select badge:\n%s", out)
+	}
+	if !strings.Contains(out, "Space select/deselect task(s)") {
+		t.Fatalf("missing updated help text:\n%s", out)
+	}
+}
+
+func TestViewRendersPendingRunWithBlockingInfo(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:          "bd-task",
+		Mode:             model.RunModePlan,
+		Agent:            "codex",
+		PaneID:           "%9",
+		Pending:          true,
+		BlockedByIssueID: "bd-blocker",
+		WaitStartedAt:    now,
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       store,
+	})
+
+	m := NewModel(svc)
+	m.taskViewportWidth = 120
+	m.taskViewportHeight = 24
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-task", Title: "Task", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-task")
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "run=waiting(plan)") {
+		t.Fatalf("expected waiting run state in view:\n%s", out)
+	}
+	if !strings.Contains(out, "blocked_by=bd-blocker") {
+		t.Fatalf("expected blocked_by from pending run in view:\n%s", out)
 	}
 }
 

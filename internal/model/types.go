@@ -44,23 +44,28 @@ type TaskBranchMeta struct {
 }
 
 type TaskRunMeta struct {
-	IssueID         string    `json:"issue_id"`
-	Mode            RunMode   `json:"mode"`
-	Agent           string    `json:"agent"`
-	PaneID          string    `json:"pane_id,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at,omitempty"`
-	ExpectedProcess string    `json:"expected_process,omitempty"`
-	ChaosSessionID  string    `json:"chaos_session_id,omitempty"`
+	IssueID          string    `json:"issue_id"`
+	Mode             RunMode   `json:"mode"`
+	Agent            string    `json:"agent"`
+	PaneID           string    `json:"pane_id,omitempty"`
+	Pending          bool      `json:"pending,omitempty"`
+	BlockedByIssueID string    `json:"blocked_by_issue_id,omitempty"`
+	WaitStartedAt    time.Time `json:"wait_started_at,omitempty"`
+	StartedAt        time.Time `json:"started_at,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+	ExpectedProcess  string    `json:"expected_process,omitempty"`
+	ChaosSessionID   string    `json:"chaos_session_id,omitempty"`
 }
 
 type LiveRun struct {
-	IssueID   string
-	Mode      RunMode
-	PaneID    string
-	Running   bool
-	Agent     string
-	StartedAt time.Time
+	IssueID          string
+	Mode             RunMode
+	PaneID           string
+	Running          bool
+	Pending          bool
+	BlockedByIssueID string
+	Agent            string
+	StartedAt        time.Time
 }
 
 type ChaosState struct {

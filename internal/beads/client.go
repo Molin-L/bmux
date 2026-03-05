@@ -136,6 +136,11 @@ func (c *Client) CreateIssue(ctx context.Context, req model.CreateIssueRequest) 
 	return out, nil
 }
 
+func (c *Client) Claim(ctx context.Context, issueID string) error {
+	_, err := c.runner.Run(ctx, c.repoRoot, "bd", "update", issueID, "--claim", "--json")
+	return err
+}
+
 func (c *Client) Close(ctx context.Context, issueID, reason string) error {
 	if reason == "" {
 		reason = "Completed via bmux"

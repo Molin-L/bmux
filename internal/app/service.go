@@ -25,6 +25,7 @@ type BeadsClient interface {
 	Show(ctx context.Context, issueID string) (model.Issue, error)
 	Dependencies(ctx context.Context, issueID string) ([]model.Dependency, error)
 	CreateIssue(ctx context.Context, req model.CreateIssueRequest) (model.Issue, error)
+	Claim(ctx context.Context, issueID string) error
 	UpdateMetadata(ctx context.Context, issueID string, metadata map[string]string) error
 	Close(ctx context.Context, issueID, reason string) error
 }
@@ -513,12 +514,14 @@ func (s *Service) GetLiveRun(issueID string) (model.LiveRun, bool, error) {
 		return model.LiveRun{}, false, nil
 	}
 	return model.LiveRun{
-		IssueID:   meta.IssueID,
-		Mode:      meta.Mode,
-		PaneID:    meta.PaneID,
-		Running:   true,
-		Agent:     meta.Agent,
-		StartedAt: meta.StartedAt,
+		IssueID:          meta.IssueID,
+		Mode:             meta.Mode,
+		PaneID:           meta.PaneID,
+		Running:          true,
+		Pending:          meta.Pending,
+		BlockedByIssueID: meta.BlockedByIssueID,
+		Agent:            meta.Agent,
+		StartedAt:        meta.StartedAt,
 	}, true, nil
 }
 
@@ -611,11 +614,14 @@ func (s *Service) ComputeBlockedBy(ctx context.Context, issues []model.Issue) (m
 }
 
 func (s *Service) StartTaskMode(ctx context.Context, issueID string, mode model.RunMode) (model.TaskRunMeta, error) {
-	return s.startTaskModeInternal(ctx, issueID, mode, "", false)
+	return s.startTaskModeInternal(ctx, issueID, mode, "", false, "")
 }
 
-func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID string, allowQueued bool) (model.TaskRunMeta, error) {
-	_ = allowQueued
+func (s *Service) StartTaskModeWaiting(ctx context.Context, issueID string, mode model.RunMode, blockerID string) (model.TaskRunMeta, error) {
+	return s.startTaskModeInternal(ctx, issueID, mode, "", true, blockerID)
+}
+
+func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID string, pending bool, blockerID string) (model.TaskRunMeta, error) {
 	if mode != model.RunModePlan && mode != model.RunModeSelfRun && mode != model.RunModeChaos {
 		return model.TaskRunMeta{}, fmt.Errorf("unsupported run mode: %s", mode)
 	}
@@ -636,6 +642,20 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 		return model.TaskRunMeta{}, fmt.Errorf("task already running in pane %s", paneID)
 	}
 
+	if pending {
+		return s.startWaitingTask(ctx, issueID, mode, chaosSessionID, blockerID)
+	}
+	claimBeforeStart := mode != model.RunModeChaos
+	return s.startRunnableTask(ctx, issueID, mode, chaosSessionID, "", claimBeforeStart)
+}
+
+func (s *Service) startRunnableTask(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID, paneID string, claimBeforeStart bool) (model.TaskRunMeta, error) {
+	if claimBeforeStart {
+		if err := s.beads.Claim(ctx, issueID); err != nil {
+			return model.TaskRunMeta{}, err
+		}
+	}
+
 	taskMeta, err := s.OpenTask(ctx, issueID)
 	if err != nil {
 		return model.TaskRunMeta{}, err
@@ -648,9 +668,12 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 	issue.Dependencies = deps
 
 	prompt := s.renderModePrompt(mode, issue, taskMeta)
-	paneID, err := s.createPlanningPane(ctx)
-	if err != nil {
-		return model.TaskRunMeta{}, err
+	usePaneID := strings.TrimSpace(paneID)
+	if usePaneID == "" {
+		usePaneID, err = s.createPane(ctx, taskMeta.WorktreePath)
+		if err != nil {
+			return model.TaskRunMeta{}, err
+		}
 	}
 	cmd, _, err := s.resolveAgentCommand("codex")
 	if err != nil {
@@ -660,18 +683,18 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 	if err != nil {
 		return model.TaskRunMeta{}, err
 	}
-	if err := s.tmux.SendKeys(ctx, paneID, launchCmd, true); err != nil {
+	if err := s.tmux.SendKeys(ctx, usePaneID, launchCmd, true); err != nil {
 		return model.TaskRunMeta{}, err
 	}
-	_ = s.waitForPaneCommand(ctx, paneID, "codex", 5*time.Second)
+	_ = s.waitForPaneCommand(ctx, usePaneID, "codex", 5*time.Second)
 
-	content, _ := s.tmux.CapturePane(ctx, paneID, 100)
+	content, _ := s.tmux.CapturePane(ctx, usePaneID, 100)
 	if hasTrustPrompt(content) {
-		_ = s.tmux.SendKeys(ctx, paneID, "", true)
+		_ = s.tmux.SendKeys(ctx, usePaneID, "", true)
 		time.Sleep(200 * time.Millisecond)
-		again, _ := s.tmux.CapturePane(ctx, paneID, 100)
+		again, _ := s.tmux.CapturePane(ctx, usePaneID, 100)
 		if hasTrustPrompt(again) {
-			_ = s.tmux.SendKeys(ctx, paneID, "y", true)
+			_ = s.tmux.SendKeys(ctx, usePaneID, "y", true)
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
@@ -681,11 +704,49 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 		IssueID:         issueID,
 		Mode:            mode,
 		Agent:           "codex",
-		PaneID:          paneID,
+		PaneID:          usePaneID,
 		StartedAt:       now,
 		UpdatedAt:       now,
 		ExpectedProcess: "codex",
 		ChaosSessionID:  chaosSessionID,
+	}
+	if err := s.store.RunLockUpsert(run); err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	return run, nil
+}
+
+func (s *Service) startWaitingTask(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID, blockerID string) (model.TaskRunMeta, error) {
+	blockerID = strings.TrimSpace(blockerID)
+	if blockerID == "" {
+		return model.TaskRunMeta{}, errors.New("blocker issue id is required for waiting start")
+	}
+
+	taskMeta, err := s.OpenTask(ctx, issueID)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	paneID, err := s.createPane(ctx, taskMeta.WorktreePath)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
+	waitCmd := buildWaitingPaneCommand(blockerID, issueID, taskMeta.Branch)
+	if err := s.tmux.SendKeys(ctx, paneID, waitCmd, true); err != nil {
+		return model.TaskRunMeta{}, err
+	}
+
+	now := time.Now().UTC()
+	run := model.TaskRunMeta{
+		IssueID:          issueID,
+		Mode:             mode,
+		Agent:            "codex",
+		PaneID:           paneID,
+		Pending:          true,
+		BlockedByIssueID: blockerID,
+		WaitStartedAt:    now,
+		StartedAt:        now,
+		UpdatedAt:        now,
+		ChaosSessionID:   chaosSessionID,
 	}
 	if err := s.store.RunLockUpsert(run); err != nil {
 		return model.TaskRunMeta{}, err
@@ -842,7 +903,7 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 			continue
 		}
 
-		if _, err := s.startTaskModeInternal(ctx, issueID, model.RunModeChaos, chaos.SessionID, true); err != nil {
+		if _, err := s.startTaskModeInternal(ctx, issueID, model.RunModeChaos, chaos.SessionID, false, ""); err != nil {
 			// Do not relaunch forever within the same chaos session.
 			finishedSet[issueID] = struct{}{}
 			continue
@@ -930,8 +991,56 @@ func (s *Service) ReconcileRunLocks(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) PromotePendingRuns(ctx context.Context) (int, int, error) {
+	runs, err := s.store.RunLockAll()
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(runs) == 0 || s.tmux == nil {
+		return 0, 0, nil
+	}
+
+	promoted := 0
+	stillWaiting := 0
+	for _, run := range runs {
+		if !run.Pending {
+			continue
+		}
+		stillWaiting++
+		blockerID := strings.TrimSpace(run.BlockedByIssueID)
+		if blockerID == "" {
+			continue
+		}
+		blocker, showErr := s.beads.Show(ctx, blockerID)
+		if showErr != nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(blocker.Status), "closed") {
+			continue
+		}
+
+		issueID := strings.TrimSpace(run.IssueID)
+		paneID := strings.TrimSpace(run.PaneID)
+		if issueID == "" || paneID == "" {
+			continue
+		}
+		_ = s.tmux.SendKeys(ctx, paneID, "C-c", false)
+		time.Sleep(120 * time.Millisecond)
+		if _, startErr := s.startRunnableTask(ctx, issueID, run.Mode, run.ChaosSessionID, paneID, true); startErr != nil {
+			return promoted, stillWaiting, startErr
+		}
+		promoted++
+		stillWaiting--
+	}
+	return promoted, stillWaiting, nil
+}
+
 func (s *Service) ReconcileRuns(ctx context.Context) error {
-	return s.ReconcileRunLocks(ctx)
+	if err := s.ReconcileRunLocks(ctx); err != nil {
+		return err
+	}
+	_, _, err := s.PromotePendingRuns(ctx)
+	return err
 }
 
 func (s *Service) renderModePrompt(mode model.RunMode, issue model.Issue, taskMeta model.TaskBranchMeta) string {
@@ -1066,8 +1175,15 @@ func (s *Service) StartPlanningPane(ctx context.Context, agent string) (string, 
 }
 
 func (s *Service) createPlanningPane(ctx context.Context) (string, error) {
+	return s.createPane(ctx, s.repoRoot)
+}
+
+func (s *Service) createPane(ctx context.Context, cwd string) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		cwd = s.repoRoot
+	}
 	if s.tmuxLayout != "sidebar" {
-		return s.tmux.SplitPane(ctx, s.splitDirection, s.repoRoot)
+		return s.tmux.SplitPane(ctx, s.splitDirection, cwd)
 	}
 	currentPane, err := s.tmux.CurrentPaneID(ctx)
 	if err != nil {
@@ -1083,7 +1199,7 @@ func (s *Service) createPlanningPane(ctx context.Context) (string, error) {
 			}
 		}
 	}
-	paneID, err := s.tmux.SplitPaneOnTarget(ctx, s.splitDirection, s.repoRoot, target)
+	paneID, err := s.tmux.SplitPaneOnTarget(ctx, s.splitDirection, cwd, target)
 	if err != nil {
 		return "", err
 	}
@@ -1185,6 +1301,23 @@ func shellQuote(v string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
+func buildWaitingPaneCommand(blockerID, issueID, branch string) string {
+	execPath := "bmux"
+	if path, err := currentExecutablePath(); err == nil && strings.TrimSpace(path) != "" {
+		execPath = path
+	}
+	cmd := []string{
+		shellQuote(execPath),
+		"--wait-blocked",
+		"--issue-id", shellQuote(issueID),
+		"--blocked-by", shellQuote(blockerID),
+	}
+	if strings.TrimSpace(branch) != "" {
+		cmd = append(cmd, "--branch", shellQuote(branch))
+	}
+	return strings.Join(cmd, " ")
 }
 
 func (s *Service) ExtractPlanJSON(ctx context.Context, paneID string) (PlanPayload, error) {
@@ -1408,4 +1541,7 @@ Execution contract:
 4) Exit to prompt when done so bmux can schedule next tasks.
 `
 
-var lookPath = exec.LookPath
+var (
+	lookPath              = exec.LookPath
+	currentExecutablePath = os.Executable
+)

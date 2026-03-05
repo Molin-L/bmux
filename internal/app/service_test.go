@@ -22,6 +22,7 @@ type fakeBeads struct {
 	showErrByID map[string]error
 	showCalls   []string
 	metaWrites  map[string]map[string]string
+	claimed     []string
 	created     []model.CreateIssueRequest
 	createOut   []model.Issue
 	createErrAt int
@@ -76,6 +77,10 @@ func (f *fakeBeads) CreateIssue(_ context.Context, req model.CreateIssueRequest)
 		return f.createOut[len(f.created)-1], nil
 	}
 	return model.Issue{ID: "bd-created"}, nil
+}
+func (f *fakeBeads) Claim(_ context.Context, issueID string) error {
+	f.claimed = append(f.claimed, issueID)
+	return nil
 }
 func (f *fakeBeads) Close(context.Context, string, string) error { return nil }
 
@@ -672,6 +677,9 @@ func TestStartTaskModePlanUsesSafeFlags(t *testing.T) {
 	if len(tmux.sent) == 0 {
 		t.Fatalf("expected launch command")
 	}
+	if len(beads.claimed) != 1 || beads.claimed[0] != "bd-9" {
+		t.Fatalf("expected claim for bd-9, got %#v", beads.claimed)
+	}
 	if !strings.Contains(tmux.sent[0], "--sandbox workspace-write") || !strings.Contains(tmux.sent[0], "--ask-for-approval on-request") {
 		t.Fatalf("expected plan safety flags in %q", tmux.sent[0])
 	}
@@ -696,6 +704,9 @@ func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
 	}
 	if len(tmux.sent) == 0 {
 		t.Fatalf("expected launch command")
+	}
+	if len(beads.claimed) != 1 || beads.claimed[0] != "bd-10" {
+		t.Fatalf("expected claim for bd-10, got %#v", beads.claimed)
 	}
 	if !strings.Contains(tmux.sent[0], "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("expected yolo flag in %q", tmux.sent[0])
@@ -728,5 +739,134 @@ func TestStartTaskModeRejectsDuplicateRunningTask(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "already running in pane %5") {
 		t.Fatalf("unexpected err: %v", err)
+	}
+}
+
+func TestStartTaskModeWaitingCreatesPendingRun(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%12"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-wait", Title: "Wait task", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-wait-task"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	run, err := svc.StartTaskModeWaiting(context.Background(), "bd-wait", model.RunModeSelfRun, "bd-blocker")
+	if err != nil {
+		t.Fatalf("start waiting mode: %v", err)
+	}
+	if !run.Pending || run.BlockedByIssueID != "bd-blocker" {
+		t.Fatalf("unexpected waiting run: %+v", run)
+	}
+	if len(beads.claimed) != 0 {
+		t.Fatalf("blocked task should not be claimed yet: %#v", beads.claimed)
+	}
+	if len(tmux.sent) == 0 {
+		t.Fatalf("expected waiting command")
+	}
+	waitCmd := tmux.sent[0]
+	if !strings.Contains(waitCmd, "--wait-blocked") ||
+		!strings.Contains(waitCmd, "--issue-id") ||
+		!strings.Contains(waitCmd, "bd-wait") ||
+		!strings.Contains(waitCmd, "--blocked-by") ||
+		!strings.Contains(waitCmd, "bd-blocker") ||
+		!strings.Contains(waitCmd, "--branch") ||
+		!strings.Contains(waitCmd, "task/bd-wait-task") {
+		t.Fatalf("unexpected waiting command: %q", waitCmd)
+	}
+	if strings.Contains(waitCmd, "while true; do") {
+		t.Fatalf("waiting command should not use raw shell spinner loop: %q", waitCmd)
+	}
+}
+
+func TestPromotePendingRunsStartsTaskInSamePaneWhenBlockerClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%13"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-promote", Title: "Promote task", Status: "open"},
+		showByID: map[string]model.Issue{
+			"bd-blocker": {ID: "bd-blocker", Status: "closed"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-promote-task"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	if _, err := svc.StartTaskModeWaiting(context.Background(), "bd-promote", model.RunModePlan, "bd-blocker"); err != nil {
+		t.Fatalf("start waiting mode: %v", err)
+	}
+	promoted, waiting, err := svc.PromotePendingRuns(context.Background())
+	if err != nil {
+		t.Fatalf("promote pending runs: %v", err)
+	}
+	if promoted != 1 || waiting != 0 {
+		t.Fatalf("promoted=%d waiting=%d", promoted, waiting)
+	}
+	if len(beads.claimed) != 1 || beads.claimed[0] != "bd-promote" {
+		t.Fatalf("expected claim during promotion, got %#v", beads.claimed)
+	}
+	if len(tmux.sent) < 3 {
+		t.Fatalf("expected waiting cmd + ctrl-c + launch, got %#v", tmux.sent)
+	}
+	if tmux.sent[1] != "C-c" {
+		t.Fatalf("expected ctrl-c before launch, got %#v", tmux.sent)
+	}
+	if !strings.Contains(tmux.sent[2], " codex ") && !strings.Contains(tmux.sent[2], "; codex ") {
+		t.Fatalf("expected codex launch in same pane, got %#v", tmux.sent)
+	}
+
+	runMeta, ok, err := svc.GetTaskRunMeta("bd-promote")
+	if err != nil {
+		t.Fatalf("get run meta: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected run metadata")
+	}
+	if runMeta.Pending || runMeta.BlockedByIssueID != "" || runMeta.ExpectedProcess != "codex" {
+		t.Fatalf("unexpected promoted run meta: %+v", runMeta)
+	}
+}
+
+func TestPromotePendingRunsKeepsWaitingWhenBlockerNotClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%14"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-still", Title: "Still waiting", Status: "open"},
+		showByID: map[string]model.Issue{
+			"bd-blocker": {ID: "bd-blocker", Status: "open"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-still-waiting"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	if _, err := svc.StartTaskModeWaiting(context.Background(), "bd-still", model.RunModePlan, "bd-blocker"); err != nil {
+		t.Fatalf("start waiting mode: %v", err)
+	}
+	promoted, waiting, err := svc.PromotePendingRuns(context.Background())
+	if err != nil {
+		t.Fatalf("promote pending runs: %v", err)
+	}
+	if promoted != 0 || waiting != 1 {
+		t.Fatalf("promoted=%d waiting=%d", promoted, waiting)
+	}
+	if len(beads.claimed) != 0 {
+		t.Fatalf("should not claim while blocker still open, got %#v", beads.claimed)
+	}
+	if len(tmux.sent) != 1 {
+		t.Fatalf("expected only waiting command, got %#v", tmux.sent)
 	}
 }

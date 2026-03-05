@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Molin-L/bmux/internal/app"
@@ -98,7 +99,7 @@ func TestEnterDispatchesUsingCurrentMode(t *testing.T) {
 		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
 	})
 	m.selected = firstSelectableRow(m.rows)
-	m.selectedTaskIssueID = "bd-1"
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-1": {}}
 
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
@@ -127,7 +128,7 @@ func TestEnterWithoutSelectedTaskDoesNotDispatch(t *testing.T) {
 	if got.busy {
 		t.Fatalf("expected not busy")
 	}
-	if got.status != "No task selected. Press Space to select a task." {
+	if got.status != "No tasks selected. Press Space to select task(s)." {
 		t.Fatalf("status = %q", got.status)
 	}
 }
@@ -144,23 +145,62 @@ func TestShiftTabCyclesCurrentMode(t *testing.T) {
 	}
 }
 
-func TestSpaceSelectsAndClearsTask(t *testing.T) {
+func TestSpaceTogglesMultipleSelectedTasks(t *testing.T) {
 	t.Parallel()
 	m := NewModel(&app.Service{})
 	m.rows = buildIssueRows([]model.Issue{
 		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-2", Title: "Task 2", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
 	})
 	m.selected = firstSelectableRow(m.rows)
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	got := next.(Model)
-	if got.selectedTaskIssueID != "bd-1" {
-		t.Fatalf("selectedTaskIssueID = %q", got.selectedTaskIssueID)
+	if len(got.selectedTaskIssueIDs) != 1 {
+		t.Fatalf("selected count = %d", len(got.selectedTaskIssueIDs))
 	}
+	if _, ok := got.selectedTaskIssueIDs["bd-1"]; !ok {
+		t.Fatalf("expected bd-1 selected")
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(Model)
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	got = next.(Model)
-	if got.selectedTaskIssueID != "" {
-		t.Fatalf("expected selection cleared, got %q", got.selectedTaskIssueID)
+	if len(got.selectedTaskIssueIDs) != 2 {
+		t.Fatalf("selected count = %d", len(got.selectedTaskIssueIDs))
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	got = next.(Model)
+	if len(got.selectedTaskIssueIDs) != 1 {
+		t.Fatalf("selected count = %d", len(got.selectedTaskIssueIDs))
+	}
+	if _, ok := got.selectedTaskIssueIDs["bd-1"]; !ok {
+		t.Fatalf("expected bd-1 to remain selected")
+	}
+}
+
+func TestSelectionPrunesMissingIssuesOnRefresh(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.selectedTaskIssueIDs = map[string]struct{}{
+		"bd-1":       {},
+		"bd-missing": {},
+	}
+
+	next, _ := m.Update(issuesLoadedMsg{
+		issues: []model.Issue{
+			{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		},
+		state: app.IssueSourceState{Available: true},
+	})
+	got := next.(Model)
+	if len(got.selectedTaskIssueIDs) != 1 {
+		t.Fatalf("selected count = %d", len(got.selectedTaskIssueIDs))
+	}
+	if _, ok := got.selectedTaskIssueIDs["bd-1"]; !ok {
+		t.Fatalf("expected bd-1 to remain selected")
 	}
 }
 
@@ -306,6 +346,98 @@ func TestSelectionPreservedAcrossRefreshRows(t *testing.T) {
 	issue, ok := selectedIssueFromRows(got.rows, got.selected)
 	if !ok || issue.ID != "bd-2" {
 		t.Fatalf("selected issue = %#v, ok=%v", issue, ok)
+	}
+}
+
+func TestEnterDoesNotRestartWhenBatchActive(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.batchActive = true
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-1": {}}
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-1", Title: "Task 1", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command dispatch")
+	}
+	if got.status != "Batch launch in progress." {
+		t.Fatalf("status = %q", got.status)
+	}
+}
+
+func TestEnterBatchDispatchesImmediateMixedStart(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-a", Title: "Task A", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-b", Title: "Task B", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.blockedBy = map[string]string{"bd-b": "bd-a"}
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-a": {}, "bd-b": {}}
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command dispatch")
+	}
+	if !got.batchActive {
+		t.Fatalf("expected active batch")
+	}
+	if !got.busy {
+		t.Fatalf("expected busy true")
+	}
+}
+
+func TestBatchLaunchItemsMarksBlockedTasksAsWaiting(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-a", Title: "Task A", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-b", Title: "Task B", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.blockedBy = map[string]string{"bd-b": "bd-a"}
+	ids := []string{"bd-a", "bd-b"}
+	items := m.batchLaunchItems(ids)
+	if len(items) != 2 {
+		t.Fatalf("items len = %d", len(items))
+	}
+	if items[0].issueID != "bd-a" || items[0].blockerID != "" {
+		t.Fatalf("unexpected first item: %#v", items[0])
+	}
+	if items[1].issueID != "bd-b" || items[1].blockerID != "bd-a" {
+		t.Fatalf("unexpected second item: %#v", items[1])
+	}
+}
+
+func TestBatchLaunchResultStatusCounts(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.batchActive = true
+	m.busy = true
+
+	next, cmd := m.Update(batchLaunchResultMsg{
+		mode:    model.RunModePlan,
+		started: map[string]string{"bd-1": "%2"},
+		waiting: map[string]string{"bd-2": "%3"},
+		failed:  map[string]string{"bd-3": "task already running in pane %4"},
+	})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command")
+	}
+	if got.batchActive {
+		t.Fatalf("expected batch complete")
+	}
+	if !strings.Contains(got.status, "started=1 waiting=1 failed=1") {
+		t.Fatalf("unexpected status: %q", got.status)
 	}
 }
 

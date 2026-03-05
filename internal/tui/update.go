@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.issueSourceReason = msg.state.Reason
 		m.issues = msg.issues
 		m.rows = buildIssueRows(msg.issues)
+		m.pruneSelectedTaskIssueIDs()
 		if len(m.issues) == 0 {
 			m.selected = 0
 			if !m.issueSourceAvailable {
@@ -47,11 +49,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected = 0
 		}
 		m.status = fmt.Sprintf("Loaded %d ready issues", len(m.issues))
-		if strings.TrimSpace(m.selectedTaskIssueID) != "" {
-			if rowIndexByIssueID(m.rows, m.selectedTaskIssueID) < 0 {
-				m.selectedTaskIssueID = ""
-			}
-		}
 		m.refreshTaskViewport(true)
 		return m, m.loadBlockedByCmd()
 	case blockedByLoadedMsg:
@@ -68,6 +65,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshTaskViewport(false)
 		return m, tea.Batch(m.reconcileRunsCmd(), m.loadBlockedByCmd())
+	case batchLaunchResultMsg:
+		m.busy = false
+		m.batchActive = false
+		started := len(msg.started)
+		waiting := len(msg.waiting)
+		failed := len(msg.failed)
+		m.status = fmt.Sprintf("Batch %s launch complete: started=%d waiting=%d failed=%d", modeLabel(msg.mode), started, waiting, failed)
+		if failed > 0 {
+			for issueID, reason := range msg.failed {
+				m.status = fmt.Sprintf("%s | %s: %s", m.status, issueID, reason)
+				break
+			}
+		}
+		if started+waiting == 0 && failed == 0 {
+			m.status = fmt.Sprintf("Batch %s launch complete: no tasks launched", modeLabel(msg.mode))
+		}
+		m.refreshTaskViewport(false)
+		return m, nil
 	case actionResultMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -199,14 +214,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			if m.selectedTaskIssueID == issueID {
-				m.selectedTaskIssueID = ""
-				m.status = "Task selection cleared."
+			if m.selectedTaskIssueIDs == nil {
+				m.selectedTaskIssueIDs = map[string]struct{}{}
+			}
+			if _, selected := m.selectedTaskIssueIDs[issueID]; selected {
+				delete(m.selectedTaskIssueIDs, issueID)
+				m.status = fmt.Sprintf("Selected %d task(s).", len(m.selectedTaskIssueIDs))
 				m.refreshTaskViewport(false)
 				return m, nil
 			}
-			m.selectedTaskIssueID = issueID
-			m.status = fmt.Sprintf("Selected task: %s", issueID)
+			m.selectedTaskIssueIDs[issueID] = struct{}{}
+			m.status = fmt.Sprintf("Selected %d task(s).", len(m.selectedTaskIssueIDs))
 			m.refreshTaskViewport(false)
 			return m, nil
 		case "shift+tab":
@@ -260,9 +278,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			mode := m.taskModeOptions[m.taskModeSelected]
-			m.busy = true
 			m.prompt = ""
 			if mode == model.RunModeChaos {
+				m.busy = true
 				return m, func() tea.Msg {
 					sessionID, err := m.svc.StartChaos(context.Background())
 					if err != nil {
@@ -271,19 +289,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return actionResultMsg{status: fmt.Sprintf("Chaos started: %s", sessionID)}
 				}
 			}
-			issueID := strings.TrimSpace(m.selectedTaskIssueID)
-			if issueID == "" {
-				m.busy = false
-				m.status = "No task selected. Press Space to select a task."
+			if m.batchActive {
+				m.status = "Batch launch in progress."
 				return m, nil
 			}
-			return m, func() tea.Msg {
-				run, err := m.svc.StartTaskMode(context.Background(), issueID, mode)
-				if err != nil {
-					return actionResultMsg{err: err}
-				}
-				return actionResultMsg{status: fmt.Sprintf("Task %s started in %s mode (pane %s)", issueID, mode, run.PaneID), paneID: run.PaneID}
+			selectedIDs := m.issueIDsInRowOrder(m.selectedTaskIssueIDs)
+			if len(selectedIDs) == 0 {
+				m.status = "No tasks selected. Press Space to select task(s)."
+				return m, nil
 			}
+			items := m.batchLaunchItems(selectedIDs)
+			m.batchActive = true
+			m.busy = true
+			m.status = fmt.Sprintf("Launching %d task(s)...", len(items))
+			return m, m.startBatchLaunchCmd(items, mode)
 		case "p":
 			if m.busy {
 				return m, nil
@@ -494,5 +513,123 @@ func (m *Model) scrollViewportByPage(direction int) {
 	}
 	if m.taskViewportYOffset > maxOffset {
 		m.taskViewportYOffset = maxOffset
+	}
+}
+
+func (m *Model) pruneSelectedTaskIssueIDs() {
+	if len(m.selectedTaskIssueIDs) == 0 {
+		return
+	}
+	ready := m.readyIssueIDSet()
+	for issueID := range m.selectedTaskIssueIDs {
+		if _, ok := ready[issueID]; !ok {
+			delete(m.selectedTaskIssueIDs, issueID)
+		}
+	}
+}
+
+func (m *Model) readyIssueIDSet() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, row := range m.rows {
+		if row.kind != issueRowIssue {
+			continue
+		}
+		issueID := strings.TrimSpace(row.issue.ID)
+		if issueID == "" {
+			continue
+		}
+		out[issueID] = struct{}{}
+	}
+	return out
+}
+
+func (m *Model) issueIDsInRowOrder(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(set))
+	seen := map[string]struct{}{}
+	for _, row := range m.rows {
+		if row.kind != issueRowIssue {
+			continue
+		}
+		issueID := strings.TrimSpace(row.issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := set[issueID]; !ok {
+			continue
+		}
+		out = append(out, issueID)
+		seen[issueID] = struct{}{}
+	}
+	extra := make([]string, 0, len(set)-len(seen))
+	for issueID := range set {
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		if strings.TrimSpace(issueID) == "" {
+			continue
+		}
+		extra = append(extra, issueID)
+	}
+	sort.Strings(extra)
+	out = append(out, extra...)
+	return out
+}
+
+type batchLaunchItem struct {
+	issueID   string
+	blockerID string
+}
+
+func (m *Model) batchLaunchItems(issueIDs []string) []batchLaunchItem {
+	items := make([]batchLaunchItem, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		id := strings.TrimSpace(issueID)
+		if id == "" {
+			continue
+		}
+		items = append(items, batchLaunchItem{
+			issueID:   id,
+			blockerID: strings.TrimSpace(m.blockedBy[id]),
+		})
+	}
+	return items
+}
+
+func (m Model) startBatchLaunchCmd(items []batchLaunchItem, mode model.RunMode) tea.Cmd {
+	launchItems := append([]batchLaunchItem(nil), items...)
+	return func() tea.Msg {
+		started := map[string]string{}
+		waiting := map[string]string{}
+		failed := map[string]string{}
+		if m.svc == nil {
+			for _, item := range launchItems {
+				failed[item.issueID] = "service is not configured"
+			}
+			return batchLaunchResultMsg{mode: mode, started: started, waiting: waiting, failed: failed}
+		}
+		for _, item := range launchItems {
+			var (
+				run model.TaskRunMeta
+				err error
+			)
+			if item.blockerID != "" {
+				run, err = m.svc.StartTaskModeWaiting(context.Background(), item.issueID, mode, item.blockerID)
+			} else {
+				run, err = m.svc.StartTaskMode(context.Background(), item.issueID, mode)
+			}
+			if err != nil {
+				failed[item.issueID] = err.Error()
+				continue
+			}
+			if run.Pending {
+				waiting[item.issueID] = strings.TrimSpace(run.PaneID)
+				continue
+			}
+			started[item.issueID] = strings.TrimSpace(run.PaneID)
+		}
+		return batchLaunchResultMsg{mode: mode, started: started, waiting: waiting, failed: failed}
 	}
 }
