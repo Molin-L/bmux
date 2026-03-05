@@ -104,6 +104,32 @@ func TestClaimBuildsArgs(t *testing.T) {
 	}
 }
 
+func TestAddDependencyBuildsArgs(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{out: `{}`}
+	c := &Client{repoRoot: t.TempDir(), runner: r}
+
+	if err := c.AddDependency(context.Background(), "bd-42", "bd-41", "blocks"); err != nil {
+		t.Fatalf("add dependency: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls = %d", len(r.calls))
+	}
+	args := r.calls[0]
+	want := []string{"dep", "add", "bd-42", "bd-41", "--type", "blocks", "--json"}
+	for _, token := range want {
+		mustContain(t, args, token)
+	}
+}
+
+func TestAddDependencyRequiresIDs(t *testing.T) {
+	t.Parallel()
+	c := &Client{repoRoot: t.TempDir(), runner: &fakeRunner{}}
+	if err := c.AddDependency(context.Background(), "", "bd-1", "blocks"); err == nil {
+		t.Fatalf("expected validation error")
+	}
+}
+
 func mustContain(t *testing.T, args []string, want string) {
 	t.Helper()
 	for _, a := range args {

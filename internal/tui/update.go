@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/Molin-L/bmux/internal/app"
 	"github.com/Molin-L/bmux/internal/model"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,8 +24,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Failed to load issues: %v", msg.err)
+			m.statusDetails = nil
+			m.preserveStatusNextLoad = false
 			return m, nil
 		}
+		preserveStatus := m.preserveStatusNextLoad
+		m.preserveStatusNextLoad = false
 		prevIssueID, hadPrevSelection := m.selectedIssueID()
 		m.issueSourceAvailable = msg.state.Available
 		m.issueSourceReason = msg.state.Reason
@@ -32,11 +38,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pruneSelectedTaskIssueIDs()
 		if len(m.issues) == 0 {
 			m.selected = 0
-			if !m.issueSourceAvailable {
+			if !preserveStatus && !m.issueSourceAvailable {
 				m.status = unavailableIssuesStatus(m.issueSourceReason)
+				m.statusDetails = nil
 				return m, nil
 			}
-			m.status = "No issues. Press r to refresh."
+			if !preserveStatus {
+				m.status = "No issues. Press r to refresh."
+				m.statusDetails = nil
+			}
 			return m, nil
 		}
 		if hadPrevSelection {
@@ -48,7 +58,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selected < 0 {
 			m.selected = 0
 		}
-		m.status = fmt.Sprintf("Loaded %d issues", len(m.issues))
+		if !preserveStatus {
+			m.status = fmt.Sprintf("Loaded %d issues", len(m.issues))
+			m.statusDetails = nil
+		}
 		m.refreshTaskViewport(true)
 		return m, m.loadBlockedByCmd()
 	case blockedByLoadedMsg:
@@ -60,8 +73,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runsReconciledMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Run reconciliation failed: %v", msg.err)
+			m.statusDetails = nil
 		} else if strings.TrimSpace(msg.status) != "" {
 			m.status = msg.status
+			m.statusDetails = nil
 		}
 		m.refreshTaskViewport(false)
 		return m, tea.Batch(m.reconcileRunsCmd(), m.loadBlockedByCmd())
@@ -81,19 +96,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if started+waiting == 0 && failed == 0 {
 			m.status = fmt.Sprintf("Batch %s launch complete: no tasks launched", modeLabel(msg.mode))
 		}
+		m.statusDetails = nil
 		m.refreshTaskViewport(false)
 		return m, nil
 	case actionResultMsg:
 		m.busy = false
+		if msg.status != "" {
+			m.status = msg.status
+			if len(msg.details) == 0 {
+				m.statusDetails = nil
+			}
+		}
+		if len(msg.details) > 0 {
+			m.statusDetails = append([]string(nil), msg.details...)
+		}
+		if msg.keepStatus {
+			m.preserveStatusNextLoad = true
+		}
+		if msg.conflict != nil {
+			m.pendingMergeConflict = msg.conflict
+			m.mode = modeMergeConflictConfirm
+		} else if m.mode == modeMergeConflictConfirm {
+			m.pendingMergeConflict = nil
+			m.mode = modeMain
+		}
 		if msg.err != nil {
-			m.status = fmt.Sprintf("Action failed: %v", msg.err)
+			if strings.TrimSpace(msg.status) == "" {
+				m.status = fmt.Sprintf("Action failed: %v", msg.err)
+			}
 			if m.mode == modeAgentSelect && m.selectedAgent != "" {
 				m.errorHint = fmt.Sprintf("Configure .bmux/config.yaml -> agents.%s.command or install '%s' in PATH.", m.selectedAgent, m.selectedAgent)
 			}
+			if msg.refreshIssues {
+				return m, m.loadIssuesCmd()
+			}
 			return m, nil
-		}
-		if msg.status != "" {
-			m.status = msg.status
 		}
 		m.errorHint = ""
 		if strings.Contains(strings.ToLower(m.status), "not verified") {
@@ -104,27 +141,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingPaneID = strings.TrimSpace(msg.paneID)
 			m.mode = modeMain
 		}
+		if msg.refreshIssues {
+			return m, m.loadIssuesCmd()
+		}
 		return m, nil
 	case planCapturedMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Capture failed: %v", msg.err)
+			m.statusDetails = nil
 			m.errorHint = "ask agent to reprint block with markers"
 			return m, nil
 		}
 		m.extractedPlan = msg.plan
 		m.mode = modePlanConfirm
 		m.status = "Plan captured. Press Enter to create epic/task/subtasks or Esc to cancel."
+		m.statusDetails = nil
 		m.errorHint = ""
 		return m, nil
 	case hierarchyCreatedMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Create hierarchy failed: %v", msg.err)
+			m.statusDetails = nil
 			return m, nil
 		}
 		m.mode = modeMain
 		m.status = fmt.Sprintf("Created epic %s, task %s, subtasks=%d", msg.result.EpicID, msg.result.TaskID, len(msg.result.SubtaskIDs))
+		m.statusDetails = nil
 		return m, nil
 	case spinnerTickMsg:
 		if len(spinnerFrames) > 0 {
@@ -181,6 +225,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg {
 					res, err := m.svc.CreateHierarchyFromPlan(context.Background(), plan)
 					return hierarchyCreatedMsg{result: res, err: err}
+				}
+			}
+			return m, nil
+		}
+		if m.mode == modeMergeConflictConfirm {
+			switch msg.String() {
+			case "esc":
+				issueID := ""
+				if m.pendingMergeConflict != nil {
+					issueID = strings.TrimSpace(m.pendingMergeConflict.issueID)
+				}
+				m.mode = modeMain
+				m.pendingMergeConflict = nil
+				if issueID == "" {
+					m.status = "Merge conflict follow-up skipped."
+				} else {
+					m.status = fmt.Sprintf("Merge conflict follow-up skipped for %s.", issueID)
+				}
+				m.preserveStatusNextLoad = true
+				return m, m.loadIssuesCmd()
+			case "enter":
+				if m.busy {
+					return m, nil
+				}
+				if m.pendingMergeConflict == nil || m.pendingMergeConflict.conflict == nil {
+					m.mode = modeMain
+					m.pendingMergeConflict = nil
+					return m, nil
+				}
+				pending := *m.pendingMergeConflict
+				m.busy = true
+				return m, func() tea.Msg {
+					created, err := m.svc.CreateMergeConflictTask(context.Background(), pending.issueID, pending.conflict)
+					if err != nil {
+						return actionResultMsg{
+							status:        fmt.Sprintf("Failed to create conflict task for %s", pending.issueID),
+							err:           err,
+							refreshIssues: true,
+							keepStatus:    true,
+						}
+					}
+					details := append([]string{}, m.statusDetails...)
+					details = append(details,
+						fmt.Sprintf("Conflict task created: %s (chore P0)", strings.TrimSpace(created.ID)),
+						fmt.Sprintf("Dependency linked: %s blocked by %s", pending.issueID, strings.TrimSpace(created.ID)),
+					)
+					return actionResultMsg{
+						status:        fmt.Sprintf("Created conflict task %s for %s.", strings.TrimSpace(created.ID), pending.issueID),
+						details:       details,
+						refreshIssues: true,
+						keepStatus:    true,
+					}
 				}
 			}
 			return m, nil
@@ -248,6 +344,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.prompt = ""
 			m.status = "Refreshing..."
+			m.statusDetails = nil
+			m.preserveStatusNextLoad = false
 			return m, m.loadIssuesCmd()
 		case "n":
 			if m.busy {
@@ -368,15 +466,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if issue, issueOK := selectedIssueFromRows(m.rows, m.selected); issueOK && isClosedStatus(issue.Status) {
 				m.status = fmt.Sprintf("Cannot merge closed issue %s.", issueID)
+				m.statusDetails = nil
 				return m, nil
+			}
+			runMode, hasRunMode := m.issueRunMode(issueID)
+			if !hasRunMode {
+				runMode = model.RunModePlan
 			}
 			m.busy = true
 			return m, func() tea.Msg {
-				meta, err := m.svc.MergeTask(context.Background(), issueID, true)
+				result, err := m.svc.MergeTask(context.Background(), issueID, true)
+				details := result.DetailLines()
 				if err != nil {
-					return actionResultMsg{err: err}
+					var conflict *app.MergeConflictError
+					if errors.As(err, &conflict) {
+						if isApeRunMode(runMode) {
+							created, createErr := m.svc.CreateMergeConflictTask(context.Background(), issueID, conflict)
+							if createErr != nil {
+								return actionResultMsg{
+									status:        fmt.Sprintf("Merge conflict on %s. Failed to create conflict task.", issueID),
+									details:       details,
+									err:           createErr,
+									refreshIssues: true,
+									keepStatus:    true,
+								}
+							}
+							details = append(details,
+								fmt.Sprintf("Conflict task created: %s (chore P0)", strings.TrimSpace(created.ID)),
+								fmt.Sprintf("Dependency linked: %s blocked by %s", issueID, strings.TrimSpace(created.ID)),
+							)
+							runMeta, startErr := m.svc.StartTaskMode(context.Background(), strings.TrimSpace(created.ID), model.RunModeApe)
+							if startErr != nil {
+								return actionResultMsg{
+									status:        fmt.Sprintf("Merge conflict on %s. Conflict task %s created but failed to start.", issueID, strings.TrimSpace(created.ID)),
+									details:       details,
+									err:           startErr,
+									refreshIssues: true,
+									keepStatus:    true,
+								}
+							}
+							details = append(details, fmt.Sprintf("Started conflict task %s in pane %s (ape)", strings.TrimSpace(created.ID), strings.TrimSpace(runMeta.PaneID)))
+							return actionResultMsg{
+								status:        fmt.Sprintf("Merge conflict on %s. Conflict task %s created and started.", issueID, strings.TrimSpace(created.ID)),
+								details:       details,
+								refreshIssues: true,
+								keepStatus:    true,
+							}
+						}
+						return actionResultMsg{
+							status:        fmt.Sprintf("Merge conflict on %s. Enter=create conflict task, Esc=skip.", issueID),
+							details:       details,
+							refreshIssues: true,
+							keepStatus:    true,
+							conflict: &pendingMergeConflict{
+								issueID:  issueID,
+								runMode:  runMode,
+								conflict: conflict,
+							},
+						}
+					}
+					return actionResultMsg{
+						status:        fmt.Sprintf("Merge failed for %s", issueID),
+						details:       details,
+						err:           err,
+						refreshIssues: true,
+						keepStatus:    true,
+					}
 				}
-				return actionResultMsg{status: fmt.Sprintf("Merged %s and cleaned branch %s", issueID, meta.Branch)}
+				return actionResultMsg{
+					status:        fmt.Sprintf("Merged %s (%s -> %s).", issueID, result.Meta.Branch, result.Meta.BaseBranch),
+					details:       details,
+					refreshIssues: true,
+					keepStatus:    true,
+				}
 			}
 		case "x":
 			if m.busy {
@@ -474,6 +636,21 @@ func (m Model) issueByID(issueID string) (model.Issue, bool) {
 		}
 	}
 	return model.Issue{}, false
+}
+
+func (m Model) issueRunMode(issueID string) (model.RunMode, bool) {
+	if m.svc == nil {
+		return "", false
+	}
+	run, ok := safeGetLiveRun(m.svc, issueID)
+	if !ok {
+		return "", false
+	}
+	return run.Mode, true
+}
+
+func isApeRunMode(mode model.RunMode) bool {
+	return mode == model.RunModeApe || mode == model.RunModeChaos
 }
 
 func isClosedStatus(status string) bool {

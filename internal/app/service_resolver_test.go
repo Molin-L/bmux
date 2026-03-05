@@ -19,6 +19,7 @@ func (stubBeads) Dependencies(context.Context, string) ([]model.Dependency, erro
 func (stubBeads) CreateIssue(context.Context, model.CreateIssueRequest) (model.Issue, error) {
 	return model.Issue{}, nil
 }
+func (stubBeads) AddDependency(context.Context, string, string, string) error     { return nil }
 func (stubBeads) Claim(context.Context, string) error                             { return nil }
 func (stubBeads) UpdateMetadata(context.Context, string, map[string]string) error { return nil }
 func (stubBeads) Close(context.Context, string, string) error                     { return nil }

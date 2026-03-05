@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Molin-L/bmux/internal/beads"
+	"github.com/Molin-L/bmux/internal/errorsx"
 	"github.com/Molin-L/bmux/internal/layout"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/promptx"
@@ -27,6 +28,7 @@ type BeadsClient interface {
 	Show(ctx context.Context, issueID string) (model.Issue, error)
 	Dependencies(ctx context.Context, issueID string) ([]model.Dependency, error)
 	CreateIssue(ctx context.Context, req model.CreateIssueRequest) (model.Issue, error)
+	AddDependency(ctx context.Context, issueID, blockedByID, depType string) error
 	Claim(ctx context.Context, issueID string) error
 	UpdateMetadata(ctx context.Context, issueID string, metadata map[string]string) error
 	Close(ctx context.Context, issueID, reason string) error
@@ -134,6 +136,70 @@ type DoctorReport struct {
 type IssueSourceState struct {
 	Available bool
 	Reason    string
+}
+
+type MergeStepResult struct {
+	Name         string
+	SourceBranch string
+	TargetBranch string
+	RepoPath     string
+	BeforeCommit string
+	AfterCommit  string
+	Message      string
+	Success      bool
+}
+
+type MergeTaskResult struct {
+	IssueID string
+	Meta    model.TaskBranchMeta
+	Steps   []MergeStepResult
+}
+
+func (r MergeTaskResult) DetailLines() []string {
+	lines := make([]string, 0, len(r.Steps))
+	for _, step := range r.Steps {
+		state := "ok"
+		if !step.Success {
+			state = "failed"
+		}
+		line := fmt.Sprintf("%s: %s -> %s (%s -> %s) [%s]",
+			step.Name,
+			trimOrDash(step.SourceBranch),
+			trimOrDash(step.TargetBranch),
+			shortCommit(step.BeforeCommit),
+			shortCommit(step.AfterCommit),
+			state,
+		)
+		if msg := strings.TrimSpace(step.Message); msg != "" {
+			line = fmt.Sprintf("%s - %s", line, msg)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+type MergeConflictError struct {
+	Stage        string
+	SourceBranch string
+	TargetBranch string
+	RepoPath     string
+	StdErr       string
+	Err          error
+}
+
+func (e *MergeConflictError) Error() string {
+	msg := strings.TrimSpace(e.StdErr)
+	if msg == "" && e.Err != nil {
+		msg = strings.TrimSpace(e.Err.Error())
+	}
+	if msg == "" {
+		msg = "merge conflict detected"
+	}
+	return fmt.Sprintf("merge conflict at %s (%s -> %s): %s", trimOrDash(e.Stage), trimOrDash(e.SourceBranch), trimOrDash(e.TargetBranch), msg)
+}
+
+func (e *MergeConflictError) Unwrap() error {
+	return e.Err
 }
 
 type Service struct {
@@ -518,50 +584,189 @@ func (s *Service) GeneratePRPrompt(ctx context.Context, issueID string) (string,
 	return prompt, nil
 }
 
-func (s *Service) MergeTask(ctx context.Context, issueID string, cleanup bool) (model.TaskBranchMeta, error) {
+func (s *Service) MergeTask(ctx context.Context, issueID string, cleanup bool) (MergeTaskResult, error) {
+	issueID = strings.TrimSpace(issueID)
 	meta, ok, err := s.store.ByIssueID(issueID)
 	if err != nil {
-		return model.TaskBranchMeta{}, err
+		return MergeTaskResult{}, err
 	}
 	if !ok {
-		return model.TaskBranchMeta{}, fmt.Errorf("issue %s not found in bmux state", issueID)
+		return MergeTaskResult{}, fmt.Errorf("issue %s not found in bmux state", issueID)
 	}
 
-	if err := s.git.Merge(ctx, meta.WorktreePath, meta.BaseBranch); err != nil {
-		return model.TaskBranchMeta{}, err
+	result := MergeTaskResult{
+		IssueID: issueID,
+		Meta:    meta,
+		Steps:   []MergeStepResult{},
 	}
-	if err := s.git.Merge(ctx, s.repoRoot, meta.Branch); err != nil {
-		return model.TaskBranchMeta{}, err
+	addStep := func(step MergeStepResult) {
+		result.Steps = append(result.Steps, step)
 	}
+	readHead := func(path string) (string, string, error) {
+		branch, commit, headErr := s.git.CurrentHead(ctx, path)
+		if headErr != nil {
+			return "", "", headErr
+		}
+		return strings.TrimSpace(branch), strings.TrimSpace(commit), nil
+	}
+	mergeStep := func(name, path, sourceBranch, targetBranch string) error {
+		beforeBranch, beforeCommit, beforeErr := readHead(path)
+		step := MergeStepResult{
+			Name:         name,
+			SourceBranch: sourceBranch,
+			TargetBranch: targetBranch,
+			RepoPath:     path,
+			BeforeCommit: beforeCommit,
+			AfterCommit:  beforeCommit,
+			Success:      false,
+		}
+		if beforeErr != nil {
+			step.Message = fmt.Sprintf("failed to read HEAD before merge: %v", beforeErr)
+			addStep(step)
+			return beforeErr
+		}
+		if strings.TrimSpace(step.TargetBranch) == "" {
+			step.TargetBranch = beforeBranch
+		}
+		if strings.TrimSpace(step.SourceBranch) == "" {
+			step.SourceBranch = sourceBranch
+		}
+		if mergeErr := s.git.Merge(ctx, path, sourceBranch); mergeErr != nil {
+			_, afterCommit, _ := readHead(path)
+			if strings.TrimSpace(afterCommit) != "" {
+				step.AfterCommit = afterCommit
+			}
+			step.Message = strings.TrimSpace(commandErrSummary(mergeErr))
+			addStep(step)
+			if isMergeConflictError(mergeErr) {
+				return &MergeConflictError{
+					Stage:        name,
+					SourceBranch: sourceBranch,
+					TargetBranch: step.TargetBranch,
+					RepoPath:     path,
+					StdErr:       commandErrSummary(mergeErr),
+					Err:          mergeErr,
+				}
+			}
+			return mergeErr
+		}
+		_, afterCommit, afterErr := readHead(path)
+		if afterErr == nil && strings.TrimSpace(afterCommit) != "" {
+			step.AfterCommit = afterCommit
+		}
+		step.Success = true
+		step.Message = fmt.Sprintf("merged %s into %s", trimOrDash(step.SourceBranch), trimOrDash(step.TargetBranch))
+		addStep(step)
+		return nil
+	}
+
+	if err := mergeStep("Step 1: worktree merge", meta.WorktreePath, meta.BaseBranch, meta.Branch); err != nil {
+		return result, err
+	}
+	if err := mergeStep("Step 2: repo merge", s.repoRoot, meta.Branch, meta.BaseBranch); err != nil {
+		return result, err
+	}
+
+	closeStep := MergeStepResult{
+		Name:         "Step 3: close issue",
+		SourceBranch: issueID,
+		TargetBranch: "bd",
+		Success:      false,
+	}
+	_, closeBeforeCommit, _ := readHead(s.repoRoot)
+	closeStep.BeforeCommit = closeBeforeCommit
+	closeStep.AfterCommit = closeBeforeCommit
+	closeStep.Message = "bd close issue"
 
 	if err := s.beads.Close(ctx, issueID, "Completed via bmux"); err != nil {
+		closeStep.Message = fmt.Sprintf("failed: %s", strings.TrimSpace(commandErrSummary(err)))
+		addStep(closeStep)
 		meta.Status = "merged_pending_close"
 		if upsertErr := s.store.Upsert(meta); upsertErr != nil {
-			return model.TaskBranchMeta{}, fmt.Errorf("close issue after merge: %v (persist status: %w)", err, upsertErr)
+			return result, fmt.Errorf("close issue after merge: %v (persist status: %w)", err, upsertErr)
 		}
-		return model.TaskBranchMeta{}, err
+		result.Meta = meta
+		return result, err
 	}
+	_, closeAfterCommit, _ := readHead(s.repoRoot)
+	if strings.TrimSpace(closeAfterCommit) != "" {
+		closeStep.AfterCommit = closeAfterCommit
+	}
+	closeStep.Success = true
+	closeStep.Message = "closed issue in bd (Completed via bmux)"
+	addStep(closeStep)
 
 	if cleanup {
 		shared, err := s.hasOtherActiveRefs(issueID, meta.Branch, meta.WorktreePath)
 		if err != nil {
-			return model.TaskBranchMeta{}, err
+			return result, err
 		}
 		if !shared {
 			if err := s.git.RemoveWorktree(ctx, s.repoRoot, meta.WorktreePath); err != nil {
-				return model.TaskBranchMeta{}, err
+				return result, err
 			}
 			if err := s.git.DeleteBranch(ctx, s.repoRoot, meta.Branch); err != nil {
-				return model.TaskBranchMeta{}, err
+				return result, err
 			}
+			addStep(MergeStepResult{
+				Name:         "Step 4: cleanup",
+				SourceBranch: meta.Branch,
+				TargetBranch: meta.BaseBranch,
+				BeforeCommit: closeStep.AfterCommit,
+				AfterCommit:  closeStep.AfterCommit,
+				Success:      true,
+				Message:      fmt.Sprintf("removed worktree %s and deleted branch %s", meta.WorktreePath, meta.Branch),
+			})
+		} else {
+			addStep(MergeStepResult{
+				Name:         "Step 4: cleanup",
+				SourceBranch: meta.Branch,
+				TargetBranch: meta.BaseBranch,
+				BeforeCommit: closeStep.AfterCommit,
+				AfterCommit:  closeStep.AfterCommit,
+				Success:      true,
+				Message:      "skipped cleanup because branch/worktree is shared by another active issue",
+			})
 		}
 	}
 
 	meta.Status = "merged"
 	if err := s.store.Upsert(meta); err != nil {
-		return model.TaskBranchMeta{}, err
+		return result, err
 	}
-	return meta, nil
+	result.Meta = meta
+	return result, nil
+}
+
+func (s *Service) CreateMergeConflictTask(ctx context.Context, issueID string, conflict *MergeConflictError) (model.Issue, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return model.Issue{}, errors.New("issue id is required")
+	}
+	if conflict == nil {
+		return model.Issue{}, errors.New("merge conflict context is required")
+	}
+
+	title := fmt.Sprintf("Resolve merge conflict for %s", issueID)
+	description := buildMergeConflictIssueDescription(issueID, conflict)
+	req := model.CreateIssueRequest{
+		Title:       title,
+		Description: description,
+		Type:        "chore",
+		Priority:    0,
+	}
+	created, err := s.beads.CreateIssue(ctx, req)
+	if err != nil {
+		return model.Issue{}, fmt.Errorf("create merge conflict issue: %w\nManual recovery:\n%s", err, mergeConflictManualRecoveryHint(issueID, title, description, "bd-new-conflict-id"))
+	}
+	createdID := strings.TrimSpace(created.ID)
+	if createdID == "" {
+		return model.Issue{}, fmt.Errorf("create merge conflict issue returned empty id\nManual recovery:\n%s", mergeConflictManualRecoveryHint(issueID, title, description, "bd-new-conflict-id"))
+	}
+	if err := s.beads.AddDependency(ctx, issueID, createdID, "blocks"); err != nil {
+		return model.Issue{}, fmt.Errorf("link merge conflict issue: %w\nManual recovery:\n%s", err, mergeConflictManualRecoveryHint(issueID, title, description, createdID))
+	}
+	return created, nil
 }
 
 func (s *Service) hasOtherActiveRefs(issueID, branch, worktreePath string) (bool, error) {
@@ -1487,6 +1692,84 @@ func (s *Service) buildCodexPlanningCommand(baseCmd, prompt string) (string, err
 
 func hasCLIFlag(cmd, flag string) bool {
 	return strings.Contains(cmd, flag+" ") || strings.Contains(cmd, flag+"=") || strings.HasSuffix(strings.TrimSpace(cmd), flag)
+}
+
+func commandErrSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	var cmdErr *errorsx.CommandError
+	if errors.As(err, &cmdErr) && strings.TrimSpace(cmdErr.StdErr) != "" {
+		return strings.TrimSpace(cmdErr.StdErr)
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func isMergeConflictError(err error) bool {
+	lower := strings.ToLower(commandErrSummary(err))
+	if lower == "" {
+		return false
+	}
+	patterns := []string{
+		"conflict",
+		"automatic merge failed",
+		"fix conflicts",
+		"merge conflict",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildMergeConflictIssueDescription(issueID string, conflict *MergeConflictError) string {
+	stderr := strings.ReplaceAll(strings.TrimSpace(conflict.StdErr), "\n", " | ")
+	if stderr == "" && conflict.Err != nil {
+		stderr = strings.ReplaceAll(strings.TrimSpace(conflict.Err.Error()), "\n", " | ")
+	}
+	if len(stderr) > 400 {
+		stderr = stderr[:400] + "..."
+	}
+	lines := []string{
+		fmt.Sprintf("Resolve merge conflict for %s.", issueID),
+		fmt.Sprintf("Stage: %s", trimOrDash(conflict.Stage)),
+		fmt.Sprintf("Merge: %s -> %s", trimOrDash(conflict.SourceBranch), trimOrDash(conflict.TargetBranch)),
+		fmt.Sprintf("Repo path: %s", trimOrDash(conflict.RepoPath)),
+		fmt.Sprintf("Error: %s", trimOrDash(stderr)),
+		"",
+		"After resolving conflicts, complete merge and close the source issue.",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func mergeConflictManualRecoveryHint(issueID, title, description, conflictIssueID string) string {
+	if strings.TrimSpace(conflictIssueID) == "" {
+		conflictIssueID = "bd-new-conflict-id"
+	}
+	createCmd := fmt.Sprintf("bd create --title %s --description %s --type chore --priority P0 --json", shellQuote(title), shellQuote(description))
+	depCmd := fmt.Sprintf("bd dep add %s %s --type blocks --json", shellQuote(issueID), shellQuote(conflictIssueID))
+	return createCmd + "\n" + depCmd
+}
+
+func shortCommit(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return "-"
+	}
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
+}
+
+func trimOrDash(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "-"
+	}
+	return v
 }
 
 func shellQuote(v string) string {

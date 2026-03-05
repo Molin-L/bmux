@@ -153,6 +153,48 @@ func TestViewRendersMultiSelectBadgeAndHelpText(t *testing.T) {
 	}
 }
 
+func TestViewRendersStatusDetailsAsMultilineBlock(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.status = "Merged bd-1 (task/bd-1 -> main)."
+	m.statusDetails = []string{
+		"Step 1: worktree merge: main -> task/bd-1 (abc123 -> def456) [ok]",
+		"Step 2: repo merge: task/bd-1 -> main (111111 -> 222222) [ok]",
+		"Step 3: close issue: bd-1 -> bd (222222 -> 222222) [ok]",
+	}
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "Status: Merged bd-1 (task/bd-1 -> main).") {
+		t.Fatalf("missing status headline:\n%s", out)
+	}
+	if !strings.Contains(out, "Step 2: repo merge: task/bd-1 -> main") {
+		t.Fatalf("missing detail lines:\n%s", out)
+	}
+}
+
+func TestViewRendersMergeConflictConfirmInline(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeMergeConflictConfirm
+	m.pendingMergeConflict = &pendingMergeConflict{
+		issueID: "bd-9",
+		runMode: model.RunModePlan,
+		conflict: &app.MergeConflictError{
+			Stage:        "Step 1",
+			SourceBranch: "main",
+			TargetBranch: "task/bd-9",
+		},
+	}
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "Merge conflict for bd-9.") {
+		t.Fatalf("missing conflict header:\n%s", out)
+	}
+	if !strings.Contains(out, "Enter=create conflict task") || !strings.Contains(out, "Esc=skip") {
+		t.Fatalf("missing conflict actions:\n%s", out)
+	}
+}
+
 func TestViewRendersPendingRunWithBlockingInfo(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

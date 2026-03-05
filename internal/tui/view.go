@@ -15,7 +15,7 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Padding(0, 1)
 	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
-	taskListStyle    = lipgloss.NewStyle()
+	taskListStyle     = lipgloss.NewStyle()
 	panelStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 	epicStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
 	statusBucketStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("180"))
@@ -84,7 +84,11 @@ func (m Model) View() string {
 		body = append(body, busyStyle.Render("Working..."))
 	}
 	if m.status != "" {
-		body = append(body, statusStyle.Render("Status: "+m.status))
+		statusLines := []string{"Status: " + m.status}
+		for _, line := range m.statusDetails {
+			statusLines = append(statusLines, "  "+line)
+		}
+		body = append(body, statusStyle.Render(strings.Join(statusLines, "\n")))
 	}
 	if m.pendingPaneID != "" {
 		body = append(body, statusStyle.Render("Planning Pane: "+m.pendingPaneID))
@@ -102,8 +106,21 @@ func (m Model) View() string {
 	if m.mode == modePlanConfirm {
 		body = append(body, panelStyle.Render(m.renderPlanConfirm()))
 	}
+	if m.mode == modeMergeConflictConfirm {
+		body = append(body, statusStyle.Render(m.renderMergeConflictConfirm()))
+	}
 
 	return strings.Join(body, "\n")
+}
+
+func (m Model) renderMergeConflictConfirm() string {
+	if m.pendingMergeConflict == nil {
+		return "Merge conflict detected.\nEnter=create conflict task, Esc=skip."
+	}
+	return fmt.Sprintf(
+		"Merge conflict for %s.\nEnter=create conflict task (chore P0), Esc=skip.",
+		strings.TrimSpace(m.pendingMergeConflict.issueID),
+	)
 }
 
 func (m Model) renderTasksContent(width int) tasksRender {

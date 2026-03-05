@@ -29,10 +29,14 @@ type issueRow struct {
 }
 
 type actionResultMsg struct {
-	status string
-	prompt string
-	paneID string
-	err    error
+	status        string
+	details       []string
+	prompt        string
+	paneID        string
+	err           error
+	refreshIssues bool
+	keepStatus    bool
+	conflict      *pendingMergeConflict
 }
 
 type planCapturedMsg struct {
@@ -70,6 +74,7 @@ const (
 	modeMain viewMode = iota
 	modeAgentSelect
 	modePlanConfirm
+	modeMergeConflictConfirm
 )
 
 const (
@@ -81,36 +86,45 @@ const (
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+type pendingMergeConflict struct {
+	issueID  string
+	runMode  model.RunMode
+	conflict *app.MergeConflictError
+}
+
 type Model struct {
-	svc                  *app.Service
-	issues               []model.Issue
-	rows                 []issueRow
-	selected             int
-	selectedTaskIssueIDs map[string]struct{}
-	blockedBy            map[string]string
-	batchActive          bool
-	taskViewportYOffset  int
-	taskViewportWidth    int
-	taskViewportHeight   int
-	taskDetailsHeight    int
-	status               string
-	prompt               string
-	busy                 bool
-	width                int
-	height               int
-	issueSourceAvailable bool
-	issueSourceReason    string
-	mode                 viewMode
-	taskModeOptions      []model.RunMode
-	taskModeSelected     int
-	agentOptions         []string
-	agentSelected        int
-	pendingPaneID        string
-	selectedAgent        string
-	extractedPlan        app.PlanPayload
-	lastPlanRaw          string
-	errorHint            string
-	spinnerFrame         int
+	svc                    *app.Service
+	issues                 []model.Issue
+	rows                   []issueRow
+	selected               int
+	selectedTaskIssueIDs   map[string]struct{}
+	blockedBy              map[string]string
+	batchActive            bool
+	taskViewportYOffset    int
+	taskViewportWidth      int
+	taskViewportHeight     int
+	taskDetailsHeight      int
+	status                 string
+	statusDetails          []string
+	prompt                 string
+	busy                   bool
+	width                  int
+	height                 int
+	issueSourceAvailable   bool
+	issueSourceReason      string
+	mode                   viewMode
+	taskModeOptions        []model.RunMode
+	taskModeSelected       int
+	agentOptions           []string
+	agentSelected          int
+	pendingPaneID          string
+	selectedAgent          string
+	extractedPlan          app.PlanPayload
+	lastPlanRaw            string
+	errorHint              string
+	spinnerFrame           int
+	preserveStatusNextLoad bool
+	pendingMergeConflict   *pendingMergeConflict
 }
 
 func NewModel(svc *app.Service) Model {

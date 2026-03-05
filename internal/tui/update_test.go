@@ -40,6 +40,127 @@ func TestIssuesLoadedNoIssuesUnavailable(t *testing.T) {
 	}
 }
 
+func TestIssuesLoadedPreservesMergeStatusWhenFlagSet(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.status = "Merged bd-1."
+	m.statusDetails = []string{"Step 1: merge", "Step 2: close"}
+	m.preserveStatusNextLoad = true
+
+	next, _ := m.Update(issuesLoadedMsg{
+		issues: []model.Issue{{ID: "bd-1", Title: "Task 1", Status: "open"}},
+		state:  app.IssueSourceState{Available: true},
+	})
+	got := next.(Model)
+	if got.status != "Merged bd-1." {
+		t.Fatalf("status = %q", got.status)
+	}
+	if len(got.statusDetails) != 2 {
+		t.Fatalf("statusDetails = %#v", got.statusDetails)
+	}
+}
+
+func TestActionResultConflictSetsConfirmModeAndRefreshes(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+
+	next, cmd := m.Update(actionResultMsg{
+		status:        "Merge conflict on bd-1. Enter=create conflict task, Esc=skip.",
+		details:       []string{"Step 1: worktree merge ... [failed]"},
+		refreshIssues: true,
+		keepStatus:    true,
+		conflict: &pendingMergeConflict{
+			issueID: "bd-1",
+			runMode: model.RunModePlan,
+			conflict: &app.MergeConflictError{
+				Stage:        "Step 1: worktree merge",
+				SourceBranch: "main",
+				TargetBranch: "task/bd-1",
+				RepoPath:     "/tmp/repo",
+				StdErr:       "CONFLICT",
+			},
+		},
+	})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected refresh command")
+	}
+	if got.mode != modeMergeConflictConfirm {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	if got.pendingMergeConflict == nil || got.pendingMergeConflict.issueID != "bd-1" {
+		t.Fatalf("pending conflict = %#v", got.pendingMergeConflict)
+	}
+}
+
+func TestMergeConflictConfirmEscSkipsAndRefreshes(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeMergeConflictConfirm
+	m.pendingMergeConflict = &pendingMergeConflict{
+		issueID: "bd-1",
+		runMode: model.RunModePlan,
+		conflict: &app.MergeConflictError{
+			Stage: "Step 1",
+		},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected refresh command")
+	}
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v, want modeMain", got.mode)
+	}
+	if got.pendingMergeConflict != nil {
+		t.Fatalf("pending conflict should be cleared")
+	}
+	if !strings.Contains(strings.ToLower(got.status), "skipped") {
+		t.Fatalf("unexpected status: %q", got.status)
+	}
+}
+
+func TestMergeConflictConfirmEnterDispatchesCreateCmd(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeMergeConflictConfirm
+	m.pendingMergeConflict = &pendingMergeConflict{
+		issueID: "bd-1",
+		runMode: model.RunModePlan,
+		conflict: &app.MergeConflictError{
+			Stage: "Step 1",
+		},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected create command")
+	}
+	if !got.busy {
+		t.Fatalf("expected busy while creating conflict task")
+	}
+}
+
+func TestActionResultErrorCanStillTriggerRefresh(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	next, cmd := m.Update(actionResultMsg{
+		status:        "Merge failed for bd-9",
+		err:           assertErr("merge failed"),
+		refreshIssues: true,
+		keepStatus:    true,
+	})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected refresh command")
+	}
+	if !strings.Contains(got.status, "Merge failed for bd-9") {
+		t.Fatalf("unexpected status: %q", got.status)
+	}
+}
+
 func TestActionWhileSourceUnavailableDoesNotDispatch(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)

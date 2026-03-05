@@ -136,6 +136,20 @@ func (c *Client) CreateIssue(ctx context.Context, req model.CreateIssueRequest) 
 	return out, nil
 }
 
+func (c *Client) AddDependency(ctx context.Context, issueID, blockedByID, depType string) error {
+	issueID = strings.TrimSpace(issueID)
+	blockedByID = strings.TrimSpace(blockedByID)
+	if issueID == "" || blockedByID == "" {
+		return errors.New("issue id and blocked-by id are required")
+	}
+	depType = strings.TrimSpace(depType)
+	if depType == "" {
+		depType = "blocks"
+	}
+	_, err := c.runner.Run(ctx, c.repoRoot, "bd", "dep", "add", issueID, blockedByID, "--type", depType, "--json")
+	return err
+}
+
 func (c *Client) Claim(ctx context.Context, issueID string) error {
 	_, err := c.runner.Run(ctx, c.repoRoot, "bd", "update", issueID, "--claim", "--json")
 	return err
