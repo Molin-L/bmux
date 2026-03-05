@@ -713,6 +713,72 @@ func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
 	}
 }
 
+func TestTickChaosKeepsSessionActiveWhileRunLockStillExists(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+
+	if err := store.SetChaosState(&model.ChaosState{
+		SessionID:        "chaos-1",
+		Active:           true,
+		LaunchedIssueIDs: []string{"bd-42"},
+		FinishedIssueIDs: []string{},
+		ActiveIssueIDs:   []string{"bd-42"},
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed chaos state: %v", err)
+	}
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:         "bd-42",
+		Mode:            model.RunModeChaos,
+		Agent:           "codex",
+		PaneID:          "%42",
+		StartedAt:       now,
+		UpdatedAt:       now,
+		ExpectedProcess: "codex",
+		ChaosSessionID:  "chaos-1",
+	}); err != nil {
+		t.Fatalf("seed run lock: %v", err)
+	}
+
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: store,
+		Beads:         &fakeBeads{ready: []model.Issue{}},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+		Tmux:          &fakeTmux{paneID: "%42"},
+		CodexCommand:  "codex",
+	})
+
+	status, done, err := svc.TickChaos(context.Background())
+	if err != nil {
+		t.Fatalf("tick chaos: %v", err)
+	}
+	if done {
+		t.Fatalf("done = true, want false; status=%q", status)
+	}
+	if !strings.Contains(status, "running=1") {
+		t.Fatalf("expected running=1 in status, got %q", status)
+	}
+
+	chaos, ok, err := store.ChaosState()
+	if err != nil {
+		t.Fatalf("read chaos state: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected chaos state")
+	}
+	if !chaos.Active {
+		t.Fatalf("chaos active = false, want true: %+v", chaos)
+	}
+	if len(chaos.ActiveIssueIDs) != 1 || chaos.ActiveIssueIDs[0] != "bd-42" {
+		t.Fatalf("active issues = %#v, want [\"bd-42\"]", chaos.ActiveIssueIDs)
+	}
+}
+
 func TestStartTaskModeRejectsDuplicateRunningTask(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

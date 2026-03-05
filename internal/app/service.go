@@ -842,12 +842,7 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 		issueSet[issue.ID] = issue
 	}
 
-	runningCount := 0
-	for issueID := range activeSet {
-		if _, ok := issueSet[issueID]; ok {
-			runningCount++
-		}
-	}
+	runningCount := len(activeSet)
 	capacity := s.chaosMaxParallel - runningCount
 	if capacity < 0 {
 		capacity = 0
