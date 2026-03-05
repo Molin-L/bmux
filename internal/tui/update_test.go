@@ -91,6 +91,17 @@ func TestNOpensAgentSelector(t *testing.T) {
 	}
 }
 
+func TestNewModelIncludesApeModeOption(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	if len(m.taskModeOptions) != 3 {
+		t.Fatalf("task mode options len = %d", len(m.taskModeOptions))
+	}
+	if got, want := m.taskModeOptions[2], model.RunModeApe; got != want {
+		t.Fatalf("task mode option[2] = %q, want %q", got, want)
+	}
+}
+
 func TestEnterDispatchesUsingCurrentMode(t *testing.T) {
 	t.Parallel()
 	m := NewModel(&app.Service{})

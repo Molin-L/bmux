@@ -164,10 +164,10 @@ type executionPrompts struct {
 }
 
 type RunSummary struct {
-	Running     int
-	Launched    int
-	Finished    int
-	ActiveChaos bool
+	Running   int
+	Launched  int
+	Finished  int
+	ActiveApe bool
 }
 
 var nonAlphaNumericToken = regexp.MustCompile(`[^a-z0-9]+`)
@@ -281,9 +281,13 @@ func executionPromptTemplates(plan, selfRun, chaos string) (string, string, stri
 		selfRun = defaultModeSelfRunPromptTemplate
 	}
 	if strings.TrimSpace(chaos) == "" {
-		chaos = defaultModeChaosPromptTemplate
+		chaos = defaultModeApePromptTemplate
 	}
 	return plan, selfRun, chaos
+}
+
+func isApeMode(mode model.RunMode) bool {
+	return mode == model.RunModeApe || mode == model.RunModeChaos
 }
 
 func (s *Service) ReadyIssues(ctx context.Context) ([]model.Issue, error) {
@@ -609,7 +613,7 @@ func (s *Service) RunSummary(issueIDs []string) (RunSummary, error) {
 		sum.Running++
 	}
 	if chaos, ok, err := s.store.ChaosState(); err == nil && ok && chaos.Active {
-		sum.ActiveChaos = true
+		sum.ActiveApe = true
 		sum.Launched = len(dedupeStrings(chaos.LaunchedIssueIDs))
 		sum.Finished = len(dedupeStrings(chaos.FinishedIssueIDs))
 	}
@@ -677,7 +681,7 @@ func (s *Service) StartTaskModeWaiting(ctx context.Context, issueID string, mode
 }
 
 func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mode model.RunMode, chaosSessionID string, pending bool, blockerID string) (model.TaskRunMeta, error) {
-	if mode != model.RunModePlan && mode != model.RunModeSelfRun && mode != model.RunModeChaos {
+	if mode != model.RunModePlan && mode != model.RunModeSelfRun && !isApeMode(mode) {
 		return model.TaskRunMeta{}, fmt.Errorf("unsupported run mode: %s", mode)
 	}
 	issueID = strings.TrimSpace(issueID)
@@ -700,7 +704,7 @@ func (s *Service) startTaskModeInternal(ctx context.Context, issueID string, mod
 	if pending {
 		return s.startWaitingTask(ctx, issueID, mode, chaosSessionID, blockerID)
 	}
-	claimBeforeStart := mode != model.RunModeChaos
+	claimBeforeStart := !isApeMode(mode)
 	return s.startRunnableTask(ctx, issueID, mode, chaosSessionID, "", claimBeforeStart)
 }
 
@@ -827,7 +831,7 @@ func (s *Service) startWaitingTask(ctx context.Context, issueID string, mode mod
 	return run, nil
 }
 
-func (s *Service) StartChaos(ctx context.Context) (string, error) {
+func (s *Service) StartApe(ctx context.Context) (string, error) {
 	issues, sourceState, err := s.ReadyIssuesState(ctx)
 	if err != nil {
 		return "", err
@@ -839,9 +843,9 @@ func (s *Service) StartChaos(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("ready issues source is unavailable: %s", sourceState.Reason)
 	}
 	if len(issues) == 0 {
-		return "", errors.New("no ready issues for chaos mode")
+		return "", errors.New("no ready issues for ape mode")
 	}
-	sessionID := fmt.Sprintf("chaos-%d", time.Now().UTC().UnixNano())
+	sessionID := fmt.Sprintf("ape-%d", time.Now().UTC().UnixNano())
 	now := time.Now().UTC()
 	chaos := model.ChaosState{
 		SessionID:        sessionID,
@@ -859,13 +863,13 @@ func (s *Service) StartChaos(ctx context.Context) (string, error) {
 	return sessionID, nil
 }
 
-func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
+func (s *Service) TickApe(ctx context.Context) (string, bool, error) {
 	chaos, ok, err := s.store.ChaosState()
 	if err != nil {
 		return "", false, err
 	}
 	if !ok || !chaos.Active {
-		return "Chaos idle", true, nil
+		return "Ape idle", true, nil
 	}
 
 	if err := s.ReconcileRunLocks(ctx); err != nil {
@@ -904,7 +908,7 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 		return "", false, err
 	}
 	if !sourceState.Available {
-		return "Chaos paused: ready issues source unavailable", false, nil
+		return "Ape paused: ready issues source unavailable", false, nil
 	}
 
 	issueSet := map[string]model.Issue{}
@@ -971,7 +975,7 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 			continue
 		}
 
-		if _, err := s.startTaskModeInternal(ctx, issueID, model.RunModeChaos, chaos.SessionID, false, ""); err != nil {
+		if _, err := s.startTaskModeInternal(ctx, issueID, model.RunModeApe, chaos.SessionID, false, ""); err != nil {
 			// Do not relaunch forever within the same chaos session.
 			finishedSet[issueID] = struct{}{}
 			continue
@@ -1009,7 +1013,7 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 		return "", false, err
 	}
 	status := fmt.Sprintf(
-		"Chaos %s: running=%d queued=%d blocked=%d finished=%d",
+		"Ape %s: running=%d queued=%d blocked=%d finished=%d",
 		chaos.SessionID,
 		runningCount,
 		queued,
@@ -1017,6 +1021,14 @@ func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
 		len(finishedSet),
 	)
 	return status, done, nil
+}
+
+func (s *Service) StartChaos(ctx context.Context) (string, error) {
+	return s.StartApe(ctx)
+}
+
+func (s *Service) TickChaos(ctx context.Context) (string, bool, error) {
+	return s.TickApe(ctx)
 }
 
 func (s *Service) ReconcileRunLocks(ctx context.Context) error {
@@ -1119,7 +1131,7 @@ func (s *Service) renderModePrompt(mode model.RunMode, issue model.Issue, taskMe
 	switch mode {
 	case model.RunModePlan:
 		template = s.executionPrompts.plan
-	case model.RunModeChaos:
+	case model.RunModeApe, model.RunModeChaos:
 		template = s.executionPrompts.chaos
 	}
 	replacer := strings.NewReplacer(
@@ -1150,7 +1162,7 @@ func (s *Service) buildCodexModeCommand(baseCmd, prompt string, mode model.RunMo
 		if !hasCLIFlag(cmd, "--ask-for-approval") {
 			cmd += " --ask-for-approval on-request"
 		}
-	case model.RunModeSelfRun, model.RunModeChaos:
+	case model.RunModeSelfRun, model.RunModeApe, model.RunModeChaos:
 		if !hasCLIFlag(cmd, "--dangerously-bypass-approvals-and-sandbox") {
 			cmd += " --dangerously-bypass-approvals-and-sandbox"
 		}
@@ -1673,7 +1685,7 @@ Execution contract:
 4) Stay within this worktree and branch.
 `
 
-const defaultModeChaosPromptTemplate = `You are running in bmux CHAOS mode for one task from a queue.
+const defaultModeApePromptTemplate = `You are running in bmux APE mode for one task from a queue.
 
 Task:
 - ID: {{issue_id}}
@@ -1688,6 +1700,8 @@ Execution contract:
 3) Report: changed files, commands, test output summary, and risks/open questions.
 4) Exit to prompt when done so bmux can schedule next tasks.
 `
+
+const defaultModeChaosPromptTemplate = defaultModeApePromptTemplate
 
 var (
 	lookPath              = exec.LookPath

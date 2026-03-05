@@ -196,8 +196,8 @@ func (m Model) renderTasksContent(width int) tasksRender {
 			rowEnds[i] = end
 		}
 	}
-	if summary.ActiveChaos {
-		lines = append(lines, statusStyle.Render(fmt.Sprintf("Chaos: running=%d launched=%d finished=%d", summary.Running, summary.Launched, summary.Finished)))
+	if summary.ActiveApe {
+		lines = append(lines, statusStyle.Render(fmt.Sprintf("Ape: running=%d launched=%d finished=%d", summary.Running, summary.Launched, summary.Finished)))
 	}
 	content := strings.Join(lines, "\n")
 	return tasksRender{
@@ -261,8 +261,8 @@ func modeLabel(mode model.RunMode) string {
 		return "Plan"
 	case model.RunModeSelfRun:
 		return "Self-run"
-	case model.RunModeChaos:
-		return "Chaos"
+	case model.RunModeApe, model.RunModeChaos:
+		return "Ape"
 	default:
 		return string(mode)
 	}

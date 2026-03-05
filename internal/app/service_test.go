@@ -856,7 +856,7 @@ func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
 	}
 }
 
-func TestTickChaosKeepsSessionActiveWhileRunLockStillExists(t *testing.T) {
+func TestTickApeKeepsSessionActiveWhileRunLockStillExists(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	store := state.New(root)
@@ -875,7 +875,7 @@ func TestTickChaosKeepsSessionActiveWhileRunLockStillExists(t *testing.T) {
 	}
 	if err := store.RunLockUpsert(model.TaskRunMeta{
 		IssueID:         "bd-42",
-		Mode:            model.RunModeChaos,
+		Mode:            model.RunModeApe,
 		Agent:           "codex",
 		PaneID:          "%42",
 		StartedAt:       now,
@@ -896,9 +896,9 @@ func TestTickChaosKeepsSessionActiveWhileRunLockStillExists(t *testing.T) {
 		CodexCommand:  "codex",
 	})
 
-	status, done, err := svc.TickChaos(context.Background())
+	status, done, err := svc.TickApe(context.Background())
 	if err != nil {
-		t.Fatalf("tick chaos: %v", err)
+		t.Fatalf("tick ape: %v", err)
 	}
 	if done {
 		t.Fatalf("done = true, want false; status=%q", status)

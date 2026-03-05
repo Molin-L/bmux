@@ -279,14 +279,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			mode := m.taskModeOptions[m.taskModeSelected]
 			m.prompt = ""
-			if mode == model.RunModeChaos {
+			if mode == model.RunModeApe {
 				m.busy = true
 				return m, func() tea.Msg {
-					sessionID, err := m.svc.StartChaos(context.Background())
+					sessionID, err := m.svc.StartApe(context.Background())
 					if err != nil {
 						return actionResultMsg{err: err}
 					}
-					return actionResultMsg{status: fmt.Sprintf("Chaos started: %s", sessionID)}
+					return actionResultMsg{status: fmt.Sprintf("Ape started: %s", sessionID)}
 				}
 			}
 			if m.batchActive {
@@ -383,7 +383,7 @@ func (m Model) reconcileRunsCmd() tea.Cmd {
 		if err := m.svc.ReconcileRuns(context.Background()); err != nil {
 			return runsReconciledMsg{err: err}
 		}
-		status, done, err := m.svc.TickChaos(context.Background())
+		status, done, err := m.svc.TickApe(context.Background())
 		if err != nil {
 			return runsReconciledMsg{err: err}
 		}

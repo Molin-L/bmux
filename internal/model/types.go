@@ -14,7 +14,8 @@ type RunMode string
 const (
 	RunModePlan    RunMode = "plan"
 	RunModeSelfRun RunMode = "self_run"
-	RunModeChaos   RunMode = "chaos"
+	RunModeApe     RunMode = "ape"
+	RunModeChaos   RunMode = "chaos" // legacy value kept for backward compatibility
 )
 
 type Issue struct {

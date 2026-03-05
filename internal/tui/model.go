@@ -104,7 +104,7 @@ func NewModel(svc *app.Service) Model {
 		status:               "Loading ready issues...",
 		issueSourceAvailable: true,
 		mode:                 modeMain,
-		taskModeOptions:      []model.RunMode{model.RunModePlan, model.RunModeSelfRun, model.RunModeChaos},
+		taskModeOptions:      []model.RunMode{model.RunModePlan, model.RunModeSelfRun, model.RunModeApe},
 		selectedTaskIssueIDs: map[string]struct{}{},
 		blockedBy:            map[string]string{},
 		taskViewportWidth:    96,
