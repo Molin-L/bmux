@@ -3,11 +3,14 @@ package beads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/Molin-L/bmux/internal/errorsx"
 	"github.com/Molin-L/bmux/internal/execx"
 	"github.com/Molin-L/bmux/internal/model"
 )
@@ -119,6 +122,62 @@ func (c *Client) runJSON(ctx context.Context, args []string, out any) error {
 		return fmt.Errorf("parse bd json (%s): %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+func BDUnavailableReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "bd not found in PATH", true
+	}
+
+	var cmdErr *errorsx.CommandError
+	if errors.As(err, &cmdErr) {
+		if errors.Is(cmdErr.Unwrap(), exec.ErrNotFound) {
+			return "bd not found in PATH", true
+		}
+
+		stderr := strings.ToLower(strings.TrimSpace(cmdErr.StdErr))
+		if cmdErr.ExitCode == 127 || containsAny(stderr, "command not found", "no such file or directory", "not recognized as an internal or external command") {
+			return "bd not found in PATH", true
+		}
+
+		if containsAny(stderr, "unknown command", "unrecognized option", "flag provided but not defined", "invalid argument") {
+			return "bd invocation incompatible with installed version", true
+		}
+	}
+
+	return "", false
+}
+
+func IsNoReadyIssuesError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var cmdErr *errorsx.CommandError
+	if errors.As(err, &cmdErr) {
+		stderr := strings.ToLower(strings.TrimSpace(cmdErr.StdErr))
+		return containsAny(
+			stderr,
+			"no ready issues",
+			"no issues found",
+			"no matching issues",
+			"0 issues",
+		)
+	}
+
+	return false
+}
+
+func containsAny(s string, patterns ...string) bool {
+	for _, p := range patterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseDependency(currentIssueID string, m map[string]any) model.Dependency {

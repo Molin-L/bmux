@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Molin-L/bmux/internal/beads"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
@@ -67,6 +68,11 @@ type DoctorReport struct {
 	DetailMessages []string
 }
 
+type IssueSourceState struct {
+	Available bool
+	Reason    string
+}
+
 type Service struct {
 	repoRoot      string
 	worktreeDir   string
@@ -91,6 +97,20 @@ func NewService(opts Options) *Service {
 
 func (s *Service) ReadyIssues(ctx context.Context) ([]model.Issue, error) {
 	return s.beads.Ready(ctx)
+}
+
+func (s *Service) ReadyIssuesState(ctx context.Context) ([]model.Issue, IssueSourceState, error) {
+	issues, err := s.beads.Ready(ctx)
+	if err == nil {
+		return issues, IssueSourceState{Available: true}, nil
+	}
+	if reason, unavailable := beads.BDUnavailableReason(err); unavailable {
+		return []model.Issue{}, IssueSourceState{Available: false, Reason: reason}, nil
+	}
+	if beads.IsNoReadyIssuesError(err) {
+		return []model.Issue{}, IssueSourceState{Available: true}, nil
+	}
+	return nil, IssueSourceState{Available: true}, err
 }
 
 func (s *Service) OpenTask(ctx context.Context, issueID string) (model.TaskBranchMeta, error) {

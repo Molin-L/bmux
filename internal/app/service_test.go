@@ -2,21 +2,33 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Molin-L/bmux/internal/app"
+	"github.com/Molin-L/bmux/internal/errorsx"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
 
 type fakeBeads struct {
 	issue      model.Issue
+	ready      []model.Issue
+	readyErr   error
 	deps       []model.Dependency
 	metaWrites map[string]map[string]string
 }
 
-func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) { return []model.Issue{f.issue}, nil }
+func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) {
+	if f.readyErr != nil {
+		return nil, f.readyErr
+	}
+	if f.ready != nil {
+		return f.ready, nil
+	}
+	return []model.Issue{f.issue}, nil
+}
 func (f *fakeBeads) List(context.Context, map[string]string) ([]model.Issue, error) {
 	return []model.Issue{f.issue}, nil
 }
@@ -153,5 +165,91 @@ func TestGeneratePRPromptUsesStoredMeta(t *testing.T) {
 	}
 	if prompt != "TARGET release/x" {
 		t.Fatalf("prompt = %q", prompt)
+	}
+}
+
+func TestReadyIssuesStateEmptyIsAvailable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         &fakeBeads{ready: []model.Issue{}},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if !source.Available {
+		t.Fatalf("expected source available")
+	}
+	if len(issues) != 0 {
+		t.Fatalf("issues len = %d, want 0", len(issues))
+	}
+}
+
+func TestReadyIssuesStateBDUnavailable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       state.New(root),
+		Beads: &fakeBeads{readyErr: &errorsx.CommandError{
+			Command:  "bd",
+			Args:     []string{"ready", "--json"},
+			Dir:      root,
+			StdErr:   "command not found: bd",
+			ExitCode: 127,
+			Err:      errors.New("exit status 127"),
+		}},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ReadyIssuesState(context.Background())
+	if err != nil {
+		t.Fatalf("ready issues state: %v", err)
+	}
+	if source.Available {
+		t.Fatalf("expected source unavailable")
+	}
+	if source.Reason == "" {
+		t.Fatalf("expected unavailable reason")
+	}
+	if len(issues) != 0 {
+		t.Fatalf("issues len = %d, want 0", len(issues))
+	}
+}
+
+func TestReadyIssuesStateUnexpectedError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	expected := errors.New("parse failure")
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         &fakeBeads{readyErr: expected},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	issues, source, err := svc.ReadyIssuesState(context.Background())
+	if !errors.Is(err, expected) {
+		t.Fatalf("err = %v, want %v", err, expected)
+	}
+	if !source.Available {
+		t.Fatalf("expected source to remain available for unexpected errors")
+	}
+	if issues != nil {
+		t.Fatalf("issues = %#v, want nil", issues)
 	}
 }

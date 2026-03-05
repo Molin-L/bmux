@@ -19,8 +19,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Failed to load issues: %v", msg.err)
 			return m, nil
 		}
+		m.issueSourceAvailable = msg.state.Available
+		m.issueSourceReason = msg.state.Reason
 		m.issues = msg.issues
 		if len(m.issues) == 0 {
+			if !m.issueSourceAvailable {
+				m.status = unavailableIssuesStatus(m.issueSourceReason)
+				return m, nil
+			}
 			m.status = "No ready issues. Press r to refresh."
 			return m, nil
 		}
@@ -63,6 +69,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy || len(m.issues) == 0 {
 				return m, nil
 			}
+			if !m.issueSourceAvailable {
+				m.status = unavailableIssuesStatus(m.issueSourceReason)
+				return m, nil
+			}
 			m.busy = true
 			m.prompt = ""
 			issueID := m.issues[m.selected].ID
@@ -75,6 +85,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "p":
 			if m.busy || len(m.issues) == 0 {
+				return m, nil
+			}
+			if !m.issueSourceAvailable {
+				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
 			m.busy = true
@@ -90,6 +104,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy || len(m.issues) == 0 {
 				return m, nil
 			}
+			if !m.issueSourceAvailable {
+				m.status = unavailableIssuesStatus(m.issueSourceReason)
+				return m, nil
+			}
 			m.busy = true
 			issueID := m.issues[m.selected].ID
 			return m, func() tea.Msg {
@@ -101,6 +119,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "x":
 			if m.busy || len(m.issues) == 0 {
+				return m, nil
+			}
+			if !m.issueSourceAvailable {
+				m.status = unavailableIssuesStatus(m.issueSourceReason)
 				return m, nil
 			}
 			m.busy = true
@@ -119,7 +141,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) loadIssuesCmd() tea.Cmd {
 	return func() tea.Msg {
-		issues, err := m.svc.ReadyIssues(context.Background())
-		return issuesLoadedMsg{issues: issues, err: err}
+		issues, state, err := m.svc.ReadyIssuesState(context.Background())
+		return issuesLoadedMsg{issues: issues, state: state, err: err}
 	}
+}
+
+func unavailableIssuesStatus(reason string) string {
+	if reason == "" {
+		return "No ready issues. Issue source is unavailable."
+	}
+	return fmt.Sprintf("No ready issues. Issue source unavailable: %s.", reason)
 }
