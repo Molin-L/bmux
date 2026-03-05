@@ -23,6 +23,11 @@ var (
 	statusStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	busyStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
 	errorHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+
+	metaKeyStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	metaValueStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
+	metaEmptyValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	metaSepStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
 var wrapTokenPattern = regexp.MustCompile(`\S+|\s+`)
@@ -160,35 +165,32 @@ func (m Model) renderTasksContent(width int) tasksRender {
 				taskMark = "●"
 			}
 
-			metaLine := fmt.Sprintf("%s%s id=%s | p=%d | status=%s | run=%s | blocked_by=%s | pane=%s",
-				selectedCursor,
-				taskMark,
-				row.issue.ID,
-				row.issue.Priority,
-				row.issue.Status,
-				runState,
-				blockedBy,
-				paneText,
-			)
-			titleText := issueTreePrefix(m.rows, i) + row.issue.Title
+			nodePrefix := fmt.Sprintf("%s%s %s", selectedCursor, taskMark, issueIndentPrefix(m.rows, i))
+			nodeIndent := strings.Repeat(" ", lipgloss.Width(nodePrefix))
+			metaPrefix := strings.Repeat(" ", max(1, lipgloss.Width(nodePrefix)-2))
 
-			cardLines := []string{}
-			cardLines = append(cardLines, wrapWithPrefixes(metaLine, "", "  ", width)...)
-			cardLines = append(cardLines, wrapWithPrefixes(titleText, "  title: ", "         ", width)...)
-			cardLines = append(cardLines, wrapWithPrefixes(branch, "  branch: ", "          ", width)...)
+			metaLine := fmt.Sprintf("id=%s | p=%d | status=%s | run=%s | blocked_by=%s | pane=%s | branch=%s",
+				row.issue.ID, row.issue.Priority, row.issue.Status, runState, blockedBy, paneText, branch)
+
+			rowLines := []string{}
+			rowLines = append(rowLines, wrapWithPrefixes(row.issue.Title, nodePrefix, nodeIndent, width)...)
+			metaLines := wrapWithPrefixes(metaLine, metaPrefix, metaPrefix, width)
+			for idx := range metaLines {
+				metaLines[idx] = styleMetaLine(metaLines[idx])
+			}
+			rowLines = append(rowLines, metaLines...)
 
 			start := len(lines)
 			if i == m.selected {
-				for _, card := range cardLines {
-					lines = append(lines, selectedRowStyle.Render(card))
+				for _, line := range rowLines {
+					lines = append(lines, selectedRowStyle.Render(line))
 				}
 			} else {
-				lines = append(lines, cardLines...)
+				lines = append(lines, rowLines...)
 			}
 			end := len(lines) - 1
 			rowStarts[i] = start
 			rowEnds[i] = end
-			lines = append(lines, "")
 		}
 	}
 	if summary.ActiveChaos {
@@ -248,41 +250,86 @@ func modeLabel(mode model.RunMode) string {
 	}
 }
 
-func issueTreePrefix(rows []issueRow, index int) string {
+func issueIndentPrefix(rows []issueRow, index int) string {
 	if index < 0 || index >= len(rows) || rows[index].kind != issueRowIssue {
 		return ""
 	}
-	depth := max(0, rows[index].issue.HierarchyDepth)
-	if depth == 0 {
+
+	_, _, baseDepth := issueSectionBounds(rows, index)
+	depth := normalizedRowDepth(rows[index], baseDepth)
+	if depth <= 0 {
 		return ""
 	}
-
-	var b strings.Builder
-	for level := 1; level < depth; level++ {
-		b.WriteString("│  ")
-	}
-	if hasSiblingAhead(rows, index, depth) {
-		b.WriteString("├─ ")
-	} else {
-		b.WriteString("└─ ")
-	}
-	return b.String()
+	return strings.Repeat("  ", depth)
 }
 
-func hasSiblingAhead(rows []issueRow, index, depth int) bool {
+func issueSectionBounds(rows []issueRow, index int) (int, int, int) {
+	start := index
+	for i := index - 1; i >= 0; i-- {
+		if rows[i].kind == issueRowEpicHeader {
+			start = i + 1
+			break
+		}
+		start = i
+	}
+
+	end := index
 	for i := index + 1; i < len(rows); i++ {
+		if rows[i].kind == issueRowEpicHeader {
+			break
+		}
+		end = i
+	}
+
+	baseDepth := 0
+	first := true
+	for i := start; i <= end; i++ {
 		if rows[i].kind != issueRowIssue {
 			continue
 		}
-		nextDepth := max(0, rows[i].issue.HierarchyDepth)
-		if nextDepth < depth {
-			return false
-		}
-		if nextDepth == depth {
-			return true
+		d := max(0, rows[i].issue.HierarchyDepth)
+		if first || d < baseDepth {
+			baseDepth = d
+			first = false
 		}
 	}
-	return false
+	if first {
+		baseDepth = 0
+	}
+	return start, end, baseDepth
+}
+
+func normalizedRowDepth(row issueRow, baseDepth int) int {
+	depth := max(0, row.issue.HierarchyDepth-baseDepth)
+	return depth
+}
+
+func styleMetaLine(line string) string {
+	parts := strings.Split(line, " | ")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			out = append(out, part)
+			continue
+		}
+		valStyle := metaValueStyle
+		if isEmptyMetaValue(v) {
+			valStyle = metaEmptyValueStyle
+		}
+		out = append(out, metaKeyStyle.Render(k+"=")+valStyle.Render(v))
+	}
+	return strings.Join(out, metaSepStyle.Render(" | "))
+}
+
+func isEmptyMetaValue(v string) bool {
+	trimmed := strings.TrimSpace(v)
+	switch trimmed {
+	case "", "-", "(no branch)", "(none)", "none", "null":
+		return true
+	default:
+		return false
+	}
 }
 
 func wrapWithPrefixes(text, firstPrefix, continuationPrefix string, width int) []string {

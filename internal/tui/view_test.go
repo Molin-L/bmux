@@ -9,7 +9,7 @@ import (
 	"github.com/Molin-L/bmux/internal/model"
 )
 
-func TestViewRendersWrappedCardsWithTreeIndentAndBlockedBy(t *testing.T) {
+func TestViewRendersTreeRowsWithSelectionAndBlockedBy(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
 	m.taskViewportWidth = 90
@@ -33,8 +33,11 @@ func TestViewRendersWrappedCardsWithTreeIndentAndBlockedBy(t *testing.T) {
 	if !strings.Contains(out, "Epic: No Epic") {
 		t.Fatalf("missing no-epic header in view:\n%s", out)
 	}
-	if !strings.Contains(out, "▶● id=bd-task") {
+	if !strings.Contains(out, "▶● Task") {
 		t.Fatalf("missing selected markers in view:\n%s", out)
+	}
+	if !strings.Contains(out, "id=bd-task | p=1 | status=open | run=- | blocked_by=bd-parent") {
+		t.Fatalf("missing selected issue metadata in view:\n%s", out)
 	}
 	if !strings.Contains(out, "blocked_by=bd-parent") {
 		t.Fatalf("missing blocked-by value in view:\n%s", out)
@@ -45,10 +48,10 @@ func TestViewRendersWrappedCardsWithTreeIndentAndBlockedBy(t *testing.T) {
 	if strings.Contains(out, "run=completed(") {
 		t.Fatalf("run should never render completed state from local storage:\n%s", out)
 	}
-	if !strings.Contains(out, "title: └─ Task") {
+	if !strings.Contains(out, "▶● Task") {
 		t.Fatalf("missing depth-1 tree indentation in view:\n%s", out)
 	}
-	if !strings.Contains(out, "title: │  └─ Subtask") {
+	if !strings.Contains(out, "○   Subtask") {
 		t.Fatalf("missing depth-2 tree indentation in view:\n%s", out)
 	}
 }

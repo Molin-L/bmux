@@ -7,3 +7,4 @@
 .bmux/
 .worktrees/
 bmux
+bin/
