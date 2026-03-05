@@ -125,22 +125,29 @@ func (e *Executor) TickApe(ctx context.Context) (string, bool, error) {
 		}
 
 		blockers := make([]string, 0, 2)
-		if parentID := strings.TrimSpace(issue.ParentID); parentID != "" {
-			if _, ok := issueSet[parentID]; ok {
-				blockers = append(blockers, parentID)
-			}
-		}
 		deps, _ := e.beads.Dependencies(ctx, issueID)
 		for _, dep := range deps {
-			if dep.Type != "blocks" || dep.Direction != "outgoing" {
+			if !strings.EqualFold(strings.TrimSpace(dep.Type), "blocks") {
 				continue
 			}
-			blockerID := strings.TrimSpace(dep.IssueID)
-			if blockerID == "" {
+			if strings.EqualFold(strings.TrimSpace(dep.Direction), "incoming") {
 				continue
 			}
-			if _, ok := issueSet[blockerID]; ok {
-				blockers = append(blockers, blockerID)
+			candidates := []string{
+				strings.TrimSpace(dep.IssueID),
+				strings.TrimSpace(dep.TargetID),
+			}
+			if strings.TrimSpace(dep.IssueID) == issueID {
+				candidates = append([]string{strings.TrimSpace(dep.TargetID)}, candidates...)
+			}
+			for _, blockerID := range dedupeStrings(candidates) {
+				if blockerID == "" || blockerID == issueID {
+					continue
+				}
+				if _, ok := issueSet[blockerID]; ok {
+					blockers = append(blockers, blockerID)
+					break
+				}
 			}
 		}
 

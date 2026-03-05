@@ -86,6 +86,23 @@ func TestParseDependencyDirectionIncoming(t *testing.T) {
 	}
 }
 
+func TestParseDependencyCompactDepListRow(t *testing.T) {
+	t.Parallel()
+	dep := parseDependency("bd-103", map[string]any{
+		"id":              "bd-101",
+		"dependency_type": "blocks",
+	})
+	if dep.Type != "blocks" {
+		t.Fatalf("type = %q, want blocks", dep.Type)
+	}
+	if dep.Direction != "outgoing" {
+		t.Fatalf("direction = %q, want outgoing", dep.Direction)
+	}
+	if dep.IssueID != "bd-101" {
+		t.Fatalf("issue id = %q, want bd-101", dep.IssueID)
+	}
+}
+
 func TestClaimBuildsArgs(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{out: `{}`}

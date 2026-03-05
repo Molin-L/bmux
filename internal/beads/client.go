@@ -237,6 +237,7 @@ func parseDependency(currentIssueID string, m map[string]any) model.Dependency {
 	depType := firstString(m, "type", "dependency_type", "relation")
 	fromID := firstString(m, "from_id", "issue_id", "blocked", "blocked_id")
 	toID := firstString(m, "to_id", "depends_on", "depends_on_id", "blocker", "blocker_id", "target_id", "parent_id", "child_id", "related_id")
+	compactID := firstString(m, "id")
 
 	direction := ""
 	candidate := ""
@@ -255,6 +256,11 @@ func parseDependency(currentIssueID string, m map[string]any) model.Dependency {
 		candidate = toID
 	case fromID != "":
 		candidate = fromID
+	case compactID != "":
+		candidate = compactID
+	}
+	if direction == "" && compactID != "" && candidate != "" && candidate != currentIssueID {
+		direction = "outgoing"
 	}
 
 	return model.Dependency{

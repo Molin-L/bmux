@@ -10,6 +10,7 @@ import (
 type fakeBeads struct {
 	issue       model.Issue
 	deps        []model.Dependency
+	depsByIssue map[string][]model.Dependency
 	showByID    map[string]model.Issue
 	showErrByID map[string]error
 	showCalls   []string
@@ -35,7 +36,12 @@ func (f *fakeBeads) Show(_ context.Context, issueID string) (model.Issue, error)
 	return model.Issue{ID: issueID}, nil
 }
 
-func (f *fakeBeads) Dependencies(context.Context, string) ([]model.Dependency, error) {
+func (f *fakeBeads) Dependencies(_ context.Context, issueID string) ([]model.Dependency, error) {
+	if f.depsByIssue != nil {
+		if deps, ok := f.depsByIssue[issueID]; ok {
+			return deps, nil
+		}
+	}
 	return f.deps, nil
 }
 

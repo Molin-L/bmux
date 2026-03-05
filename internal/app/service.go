@@ -113,10 +113,10 @@ type Options struct {
 	ControlWidth           int
 	MinPaneWidth           int
 	MaxPaneWidth           int
-	ApeMaxParallel       int
+	ApeMaxParallel         int
 	ExecutionPlanPrompt    string
 	ExecutionSelfRunPrompt string
-	ExecutionApePrompt   string
+	ExecutionApePrompt     string
 }
 
 type DoctorReport struct {
@@ -242,10 +242,10 @@ func NewService(opts Options) *Service {
 		ControlWidth:           opts.ControlWidth,
 		MinPaneWidth:           opts.MinPaneWidth,
 		MaxPaneWidth:           opts.MaxPaneWidth,
-		ApeMaxParallel:       opts.ApeMaxParallel,
+		ApeMaxParallel:         opts.ApeMaxParallel,
 		ExecutionPlanPrompt:    opts.ExecutionPlanPrompt,
 		ExecutionSelfRunPrompt: opts.ExecutionSelfRunPrompt,
-		ExecutionApePrompt:   opts.ExecutionApePrompt,
+		ExecutionApePrompt:     opts.ExecutionApePrompt,
 		OpenTask: func(ctx context.Context, issueID string) (model.TaskBranchMeta, error) {
 			return svc.OpenTask(ctx, issueID)
 		},
@@ -801,38 +801,49 @@ func (s *Service) ComputeBlockedBy(ctx context.Context, issues []model.Issue) (m
 		if issueID == "" {
 			continue
 		}
-		candidates := make([]string, 0, 3)
-		if parentID := strings.TrimSpace(issue.ParentID); parentID != "" && parentID != issueID {
-			if _, ok := issueSet[parentID]; ok {
-				candidates = append(candidates, parentID)
-			}
-		}
 
 		deps := issue.Dependencies
-		if len(deps) == 0 {
+		blockerID, ok := firstBlocksBlocker(issueID, deps, issueSet)
+		if !ok {
 			if fetched, depErr := s.beads.Dependencies(ctx, issueID); depErr == nil {
-				deps = fetched
+				blockerID, ok = firstBlocksBlocker(issueID, fetched, issueSet)
 			}
 		}
-		for _, dep := range deps {
-			if dep.Type != "blocks" || dep.Direction != "outgoing" {
-				continue
-			}
-			blockerID := strings.TrimSpace(dep.IssueID)
+		if ok {
+			blockedBy[issueID] = blockerID
+		}
+	}
+	return blockedBy, nil
+}
+
+func firstBlocksBlocker(issueID string, deps []model.Dependency, issueSet map[string]struct{}) (string, bool) {
+	issueID = strings.TrimSpace(issueID)
+	for _, dep := range deps {
+		if !strings.EqualFold(strings.TrimSpace(dep.Type), "blocks") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(dep.Direction), "incoming") {
+			continue
+		}
+
+		candidates := []string{
+			strings.TrimSpace(dep.IssueID),
+			strings.TrimSpace(dep.TargetID),
+		}
+		if strings.TrimSpace(dep.IssueID) == issueID {
+			candidates = append([]string{strings.TrimSpace(dep.TargetID)}, candidates...)
+		}
+
+		for _, blockerID := range dedupeStrings(candidates) {
 			if blockerID == "" || blockerID == issueID {
 				continue
 			}
 			if _, ok := issueSet[blockerID]; ok {
-				candidates = append(candidates, blockerID)
+				return blockerID, true
 			}
 		}
-
-		for _, blockerID := range dedupeStrings(candidates) {
-			blockedBy[issueID] = blockerID
-			break
-		}
 	}
-	return blockedBy, nil
+	return "", false
 }
 
 func (s *Service) StartTaskMode(ctx context.Context, issueID string, mode model.RunMode) (model.TaskRunMeta, error) {

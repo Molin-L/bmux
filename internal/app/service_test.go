@@ -1127,6 +1127,100 @@ func TestListIssuesStateUnexpectedError(t *testing.T) {
 	}
 }
 
+func TestComputeBlockedByUsesBlocksDependencyOnly(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         &fakeBeads{},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	blockedBy, err := svc.ComputeBlockedBy(context.Background(), []model.Issue{
+		{ID: "bd-101", Title: "Blocker", Status: "open"},
+		{
+			ID:     "bd-103",
+			Title:  "Blocked",
+			Status: "open",
+			Dependencies: []model.Dependency{
+				{Type: "blocks", TargetID: "bd-101"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compute blocked-by: %v", err)
+	}
+	if got := blockedBy["bd-103"]; got != "bd-101" {
+		t.Fatalf("blockedBy[bd-103] = %q, want bd-101", got)
+	}
+}
+
+func TestComputeBlockedByIgnoresParentChildWithoutBlocks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         &fakeBeads{},
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	blockedBy, err := svc.ComputeBlockedBy(context.Background(), []model.Issue{
+		{ID: "bd-parent", Title: "Parent", Status: "open"},
+		{ID: "bd-child", Title: "Child", Status: "open", ParentID: "bd-parent"},
+	})
+	if err != nil {
+		t.Fatalf("compute blocked-by: %v", err)
+	}
+	if got := blockedBy["bd-child"]; got != "" {
+		t.Fatalf("blockedBy[bd-child] = %q, want empty", got)
+	}
+}
+
+func TestComputeBlockedByFallsBackToFetchedDependenciesWhenEmbeddedUnusable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		deps: []model.Dependency{
+			{Type: "blocks", Direction: "outgoing", IssueID: "bd-101"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:      root,
+		WorktreeDir:   root + "/.worktrees",
+		Store:         state.New(root),
+		Beads:         beads,
+		Git:           &fakeGit{},
+		Planner:       fakePlanner{},
+		PromptBuilder: fakePromptBuilder{},
+	})
+
+	blockedBy, err := svc.ComputeBlockedBy(context.Background(), []model.Issue{
+		{ID: "bd-101", Title: "Blocker", Status: "open"},
+		{
+			ID:     "bd-103",
+			Title:  "Blocked",
+			Status: "open",
+			Dependencies: []model.Dependency{
+				{Type: "blocks"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compute blocked-by: %v", err)
+	}
+	if got := blockedBy["bd-103"]; got != "bd-101" {
+		t.Fatalf("blockedBy[bd-103] = %q, want bd-101", got)
+	}
+}
+
 func TestCreateHierarchyFromPlanHappyPath(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
