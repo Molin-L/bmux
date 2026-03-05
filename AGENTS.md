@@ -10,6 +10,11 @@
 
 Runtime artifacts live in `.bmux/` and `.worktrees/` and should remain uncommitted.
 
+## Compatibility Policy
+- This repository is pre-release and does **not** require backward compatibility.
+- Prefer simpler, clean designs over compatibility shims, aliases, or migration layers.
+- When renaming fields/APIs/config keys internally, update all call sites and tests directly.
+
 ## Build, Test, and Development Commands
 - `go test ./...`: run the full unit test suite.
 - `go test -cover ./...`: run tests with coverage output.
