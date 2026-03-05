@@ -17,7 +17,7 @@ import (
 
 type Client struct {
 	repoRoot string
-	runner   *execx.Runner
+	runner   runner
 }
 
 func NewClient(repoRoot string, runner *execx.Runner) *Client {
@@ -25,6 +25,10 @@ func NewClient(repoRoot string, runner *execx.Runner) *Client {
 		runner = execx.New(0)
 	}
 	return &Client{repoRoot: repoRoot, runner: runner}
+}
+
+type runner interface {
+	Run(ctx context.Context, dir, name string, args ...string) (string, error)
 }
 
 func (c *Client) Ready(ctx context.Context) ([]model.Issue, error) {
@@ -100,6 +104,36 @@ func (c *Client) UpdateMetadata(ctx context.Context, issueID string, metadata ma
 	args = append(args, "--json")
 	_, err := c.runner.Run(ctx, c.repoRoot, "bd", args...)
 	return err
+}
+
+func (c *Client) CreateIssue(ctx context.Context, req model.CreateIssueRequest) (model.Issue, error) {
+	args := []string{
+		"create",
+		"--title", req.Title,
+		"--description", req.Description,
+		"--type", req.Type,
+		"--priority", strconv.Itoa(req.Priority),
+	}
+	if strings.TrimSpace(req.ParentID) != "" {
+		args = append(args, "--parent", req.ParentID)
+	}
+	args = append(args, "--json")
+	stdout, err := c.runner.Run(ctx, c.repoRoot, "bd", args...)
+	if err != nil {
+		return model.Issue{}, err
+	}
+	if strings.TrimSpace(stdout) == "" {
+		return model.Issue{}, errors.New("bd create returned empty json")
+	}
+	var asArray []model.Issue
+	if err := json.Unmarshal([]byte(stdout), &asArray); err == nil && len(asArray) > 0 {
+		return asArray[0], nil
+	}
+	var out model.Issue
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		return model.Issue{}, fmt.Errorf("parse bd json (%s): %w", strings.Join(args, " "), err)
+	}
+	return out, nil
 }
 
 func (c *Client) Close(ctx context.Context, issueID, reason string) error {

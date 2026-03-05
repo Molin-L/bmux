@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,11 +14,14 @@ import (
 )
 
 type fakeBeads struct {
-	issue      model.Issue
-	ready      []model.Issue
-	readyErr   error
-	deps       []model.Dependency
-	metaWrites map[string]map[string]string
+	issue       model.Issue
+	ready       []model.Issue
+	readyErr    error
+	deps        []model.Dependency
+	metaWrites  map[string]map[string]string
+	created     []model.CreateIssueRequest
+	createOut   []model.Issue
+	createErrAt int
 }
 
 func (f *fakeBeads) Ready(context.Context) ([]model.Issue, error) {
@@ -44,6 +48,16 @@ func (f *fakeBeads) UpdateMetadata(_ context.Context, issueID string, metadata m
 	}
 	f.metaWrites[issueID] = metadata
 	return nil
+}
+func (f *fakeBeads) CreateIssue(_ context.Context, req model.CreateIssueRequest) (model.Issue, error) {
+	f.created = append(f.created, req)
+	if f.createErrAt > 0 && len(f.created) == f.createErrAt {
+		return model.Issue{}, errors.New("create failed")
+	}
+	if len(f.createOut) >= len(f.created) {
+		return f.createOut[len(f.created)-1], nil
+	}
+	return model.Issue{ID: "bd-created"}, nil
 }
 func (f *fakeBeads) Close(context.Context, string, string) error { return nil }
 
@@ -84,6 +98,69 @@ func (p fakePlanner) ResolveBranch(model.Issue, []model.TaskBranchMeta) app.Bran
 type fakePromptBuilder struct{ out string }
 
 func (b fakePromptBuilder) Build(model.Issue, model.TaskBranchMeta) string { return b.out }
+
+type fakeTmux struct {
+	paneID     string
+	captured   string
+	splitErr   error
+	sendErr    error
+	captureErr error
+	bufferErr  error
+	sent       []string
+	splitDir   string
+	splitCWD   string
+	pasted     []string
+}
+
+func (t *fakeTmux) SplitPane(_ context.Context, direction, cwd string) (string, error) {
+	t.splitDir = direction
+	t.splitCWD = cwd
+	if t.splitErr != nil {
+		return "", t.splitErr
+	}
+	if t.paneID == "" {
+		t.paneID = "%2"
+	}
+	return t.paneID, nil
+}
+
+func (t *fakeTmux) SplitPaneOnTarget(_ context.Context, direction, cwd, _ string) (string, error) {
+	return t.SplitPane(context.Background(), direction, cwd)
+}
+
+func (t *fakeTmux) SendKeys(_ context.Context, _ string, text string, _ bool) error {
+	if t.sendErr != nil {
+		return t.sendErr
+	}
+	t.sent = append(t.sent, text)
+	return nil
+}
+
+func (t *fakeTmux) CapturePane(context.Context, string, int) (string, error) {
+	if t.captureErr != nil {
+		return "", t.captureErr
+	}
+	return t.captured, nil
+}
+
+func (t *fakeTmux) CurrentPaneID(context.Context) (string, error) { return "%1", nil }
+func (t *fakeTmux) ListPanes(context.Context, string) ([]string, error) {
+	return []string{"%1", "%2"}, nil
+}
+func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) error { return nil }
+func (t *fakeTmux) SelectLayoutMainVertical(context.Context, string) error        { return nil }
+func (t *fakeTmux) SetBuffer(_ context.Context, _ string, content string) error {
+	if t.bufferErr != nil {
+		return t.bufferErr
+	}
+	t.pasted = append(t.pasted, content)
+	return nil
+}
+func (t *fakeTmux) PasteBuffer(context.Context, string, string) error { return nil }
+func (t *fakeTmux) DeleteBuffer(context.Context, string) error        { return nil }
+func (t *fakeTmux) GetPaneCurrentCommand(context.Context, string) (string, error) {
+	return "codex", nil
+}
 
 func TestOpenTaskCreatesNewWorktreeAndStoresMetadata(t *testing.T) {
 	t.Parallel()
@@ -251,5 +328,160 @@ func TestReadyIssuesStateUnexpectedError(t *testing.T) {
 	}
 	if issues != nil {
 		t.Fatalf("issues = %#v, want nil", issues)
+	}
+}
+
+func TestCreateHierarchyFromPlanHappyPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		createOut: []model.Issue{{ID: "bd-epic"}, {ID: "bd-task"}, {ID: "bd-sub1"}, {ID: "bd-sub2"}},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+
+	plan := app.PlanPayload{
+		Goal:     "goal",
+		Epic:     app.PlanItem{Title: "Epic", Priority: 1},
+		Task:     app.PlanItem{Title: "Task", Priority: 2},
+		Subtasks: []app.PlanItem{{Title: "Sub1", Priority: 2}, {Title: "Sub2", Priority: 3}},
+	}
+	res, err := svc.CreateHierarchyFromPlan(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("create hierarchy: %v", err)
+	}
+	if res.EpicID != "bd-epic" || res.TaskID != "bd-task" || len(res.SubtaskIDs) != 2 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if beads.created[1].ParentID != "bd-epic" {
+		t.Fatalf("task parent = %q", beads.created[1].ParentID)
+	}
+	if beads.created[2].ParentID != "bd-task" {
+		t.Fatalf("subtask parent = %q", beads.created[2].ParentID)
+	}
+}
+
+func TestCreateHierarchyFromPlanStopsOnFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{
+		createOut:   []model.Issue{{ID: "bd-epic"}},
+		createErrAt: 2,
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+	plan := app.PlanPayload{
+		Goal: "goal", Epic: app.PlanItem{Title: "Epic", Priority: 1},
+		Task:     app.PlanItem{Title: "Task", Priority: 2},
+		Subtasks: []app.PlanItem{{Title: "Sub1", Priority: 2}},
+	}
+	res, err := svc.CreateHierarchyFromPlan(context.Background(), plan)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if res.EpicID != "bd-epic" || res.TaskID != "" {
+		t.Fatalf("unexpected partial result: %+v", res)
+	}
+}
+
+func TestCreateHierarchyFromPlanRejectsInvalidPayload(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	beads := &fakeBeads{}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+	})
+	_, err := svc.CreateHierarchyFromPlan(context.Background(), app.PlanPayload{
+		Goal: "g",
+		Epic: app.PlanItem{Title: "E", Priority: 1},
+		Task: app.PlanItem{Title: "T", Priority: 2},
+	})
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if len(beads.created) != 0 {
+		t.Fatalf("expected no create calls")
+	}
+}
+
+func TestExtractPlanJSON(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{captured: "x\nBMUX_PLAN_JSON_BEGIN\n{\"goal\":\"g\",\"epic\":{\"title\":\"E\",\"description\":\"\",\"priority\":1},\"task\":{\"title\":\"T\",\"description\":\"\",\"priority\":2},\"subtasks\":[{\"title\":\"S\",\"description\":\"\",\"priority\":2}]}\nBMUX_PLAN_JSON_END\n"}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{}, Tmux: tmux,
+	})
+	plan, err := svc.ExtractPlanJSON(context.Background(), "%2")
+	if err != nil {
+		t.Fatalf("extract plan: %v", err)
+	}
+	if plan.Epic.Title != "E" || len(plan.Subtasks) != 1 {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
+func TestStartPlanningPane(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%3"}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+		Tmux: tmux, SplitDirection: "below", ClaudeCommand: "claude --plan",
+	})
+	paneID, _, err := svc.StartPlanningPane(context.Background(), "claude")
+	if err != nil {
+		t.Fatalf("start planning pane: %v", err)
+	}
+	if paneID != "%3" {
+		t.Fatalf("pane id = %q", paneID)
+	}
+	if tmux.splitDir != "below" {
+		t.Fatalf("split dir = %q", tmux.splitDir)
+	}
+	if len(tmux.sent) != 2 {
+		t.Fatalf("send calls = %d", len(tmux.sent))
+	}
+}
+
+func TestStartPlanningPaneCodexAutoTrustAndPromptRetry(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		paneID:   "%7",
+		captured: "Do you trust this workspace?",
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: &fakeBeads{}, Git: &fakeGit{}, Planner: fakePlanner{}, PromptBuilder: fakePromptBuilder{},
+		Tmux: tmux, CodexCommand: "codex", TmuxLayout: "sidebar", ControlWidth: 40,
+	})
+	paneID, status, err := svc.StartPlanningPane(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("start planning pane: %v", err)
+	}
+	if paneID != "%7" {
+		t.Fatalf("pane id = %q", paneID)
+	}
+	if !strings.Contains(status, "Trust prompt detected") {
+		t.Fatalf("status missing trust handling: %q", status)
+	}
+	if len(tmux.pasted) != 0 {
+		t.Fatalf("expected no tmux buffer paste prompt transport, got %#v", tmux.pasted)
+	}
+	if len(tmux.sent) < 2 || !strings.HasPrefix(tmux.sent[0], "codex ") {
+		t.Fatalf("unexpected sent keys: %#v", tmux.sent)
+	}
+	if !strings.Contains(tmux.sent[0], "--sandbox workspace-write") || !strings.Contains(tmux.sent[0], "--ask-for-approval on-request") {
+		t.Fatalf("missing default planning flags: %q", tmux.sent[0])
+	}
+	if !strings.Contains(tmux.sent[0], "create bd issues directly") {
+		t.Fatalf("expected direct bd-creation prompt in codex launch command: %q", tmux.sent[0])
 	}
 }

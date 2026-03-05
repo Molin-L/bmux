@@ -56,6 +56,19 @@ worktree_dir: /absolute/or/project-relative/path
 branch_prefix: task/
 entrypoint: tui
 subtask_share_mode: dependency
+agents:
+  claude:
+    command: claude
+  codex:
+    command: codex
+tmux:
+  auto_attach: true
+  layout: sidebar
+  control_pane_width: 40
+  session_prefix: bmux-
+  split_direction: right
+planning:
+  prompt_template: ""
 ```
 
 Defaults:
@@ -64,6 +77,14 @@ Defaults:
 - `branch_prefix`: `task/`
 - `entrypoint`: `tui`
 - `subtask_share_mode`: `dependency`
+- `tmux.split_direction`: `right` (`right` or `below`)
+- `tmux.auto_attach`: `true` (auto-create/attach project tmux session when launched outside tmux)
+- `tmux.layout`: `sidebar` (`sidebar` or `single`)
+- `tmux.control_pane_width`: `40`
+- `tmux.session_prefix`: `bmux-`
+- `agents.claude.command`: empty by default; if empty, `bmux` falls back to `claude` from PATH
+- `agents.codex.command`: empty by default; if empty, `bmux` falls back to `codex` from PATH
+- `planning.prompt_template`: built-in template when empty
 
 ## Notes
 

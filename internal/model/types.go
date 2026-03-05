@@ -29,3 +29,11 @@ type TaskBranchMeta struct {
 	Status       string    `json:"status"`
 	PRPromptedAt time.Time `json:"pr_prompted_at,omitempty"`
 }
+
+type CreateIssueRequest struct {
+	Title       string
+	Description string
+	Type        string
+	Priority    int
+	ParentID    string
+}

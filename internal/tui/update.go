@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -39,14 +40,99 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Action failed: %v", msg.err)
+			if m.mode == modeAgentSelect && m.selectedAgent != "" {
+				m.errorHint = fmt.Sprintf("Configure .bmux/config.yaml -> agents.%s.command or install '%s' in PATH.", m.selectedAgent, m.selectedAgent)
+			}
 			return m, nil
 		}
 		if msg.status != "" {
 			m.status = msg.status
 		}
+		m.errorHint = ""
+		if strings.Contains(strings.ToLower(m.status), "not verified") {
+			m.errorHint = "Codex prompt delivery was not verified. Ask Codex to continue with the planning template, then press c."
+		}
 		m.prompt = msg.prompt
+		if strings.TrimSpace(msg.paneID) != "" {
+			m.pendingPaneID = strings.TrimSpace(msg.paneID)
+			m.mode = modeMain
+		}
+		return m, nil
+	case planCapturedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Capture failed: %v", msg.err)
+			m.errorHint = "ask agent to reprint block with markers"
+			return m, nil
+		}
+		m.extractedPlan = msg.plan
+		m.mode = modePlanConfirm
+		m.status = "Plan captured. Press Enter to create epic/task/subtasks or Esc to cancel."
+		m.errorHint = ""
+		return m, nil
+	case hierarchyCreatedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Create hierarchy failed: %v", msg.err)
+			return m, nil
+		}
+		m.mode = modeMain
+		m.status = fmt.Sprintf("Created epic %s, task %s, subtasks=%d", msg.result.EpicID, msg.result.TaskID, len(msg.result.SubtaskIDs))
 		return m, nil
 	case tea.KeyMsg:
+		if m.mode == modeAgentSelect {
+			switch msg.String() {
+			case "esc":
+				m.mode = modeMain
+				m.status = "Create planning pane canceled."
+				m.errorHint = ""
+				return m, nil
+			case "up", "k":
+				if m.agentSelected > 0 {
+					m.agentSelected--
+				}
+				return m, nil
+			case "down", "j":
+				if m.agentSelected < len(m.agentOptions)-1 {
+					m.agentSelected++
+				}
+				return m, nil
+			case "enter":
+				if m.busy {
+					return m, nil
+				}
+				m.busy = true
+				agent := m.agentOptions[m.agentSelected]
+				m.selectedAgent = agent
+				return m, func() tea.Msg {
+					paneID, status, err := m.svc.StartPlanningPane(context.Background(), agent)
+					if err != nil {
+						return actionResultMsg{err: err}
+					}
+					return actionResultMsg{status: status, paneID: paneID}
+				}
+			}
+		}
+		if m.mode == modePlanConfirm {
+			switch msg.String() {
+			case "esc":
+				m.mode = modeMain
+				m.status = "Hierarchy creation canceled."
+				return m, nil
+			case "enter":
+				if m.busy {
+					return m, nil
+				}
+				m.busy = true
+				plan := m.extractedPlan
+				return m, func() tea.Msg {
+					res, err := m.svc.CreateHierarchyFromPlan(context.Background(), plan)
+					return hierarchyCreatedMsg{result: res, err: err}
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -65,6 +151,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prompt = ""
 			m.status = "Refreshing..."
 			return m, m.loadIssuesCmd()
+		case "n":
+			if m.busy {
+				return m, nil
+			}
+			m.mode = modeAgentSelect
+			m.agentSelected = 0
+			m.selectedAgent = ""
+			m.status = "Select an agent for planning pane."
+			return m, nil
+		case "c":
+			if m.busy {
+				return m, nil
+			}
+			paneID := strings.TrimSpace(m.pendingPaneID)
+			if paneID == "" {
+				m.status = "No planning pane found. Press n first."
+				return m, nil
+			}
+			m.busy = true
+			return m, func() tea.Msg {
+				plan, err := m.svc.ExtractPlanJSON(context.Background(), paneID)
+				return planCapturedMsg{plan: plan, err: err}
+			}
 		case "enter":
 			if m.busy || len(m.issues) == 0 {
 				return m, nil

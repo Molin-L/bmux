@@ -12,6 +12,7 @@ import (
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/pr"
 	"github.com/Molin-L/bmux/internal/state"
+	"github.com/Molin-L/bmux/internal/tmux"
 )
 
 type plannerAdapter struct {
@@ -41,13 +42,20 @@ func NewDefaultService(repoRoot string) (*Service, config.Config, error) {
 	runner := execx.New(0)
 	store := state.New(repoRoot)
 	svc := NewService(Options{
-		RepoRoot:      repoRoot,
-		WorktreeDir:   cfg.WorktreeDir,
-		Store:         store,
-		Beads:         beads.NewClient(repoRoot, runner),
-		Git:           gitx.NewClient(runner),
-		Planner:       plannerAdapter{planner: branching.NewPlanner(cfg.BranchPrefix)},
-		PromptBuilder: pr.Builder{},
+		RepoRoot:       repoRoot,
+		WorktreeDir:    cfg.WorktreeDir,
+		Store:          store,
+		Beads:          beads.NewClient(repoRoot, runner),
+		Git:            gitx.NewClient(runner),
+		Planner:        plannerAdapter{planner: branching.NewPlanner(cfg.BranchPrefix)},
+		PromptBuilder:  pr.Builder{},
+		Tmux:           tmux.NewClient(runner),
+		SplitDirection: cfg.Tmux.SplitDirection,
+		ClaudeCommand:  cfg.Agents.Claude.Command,
+		CodexCommand:   cfg.Agents.Codex.Command,
+		PromptTemplate: cfg.Planning.PromptTemplate,
+		TmuxLayout:     cfg.Tmux.Layout,
+		ControlWidth:   cfg.Tmux.ControlPaneWidth,
 	})
 	return svc, cfg, nil
 }

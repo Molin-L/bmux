@@ -76,3 +76,108 @@ func TestActionWithNoIssuesRemainsNoop(t *testing.T) {
 		t.Fatalf("expected not busy")
 	}
 }
+
+func TestNOpensAgentSelector(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command")
+	}
+	if got.mode != modeAgentSelect {
+		t.Fatalf("mode = %v", got.mode)
+	}
+}
+
+func TestAgentSelectorEscReturnsMain(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeAgentSelect
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v", got.mode)
+	}
+}
+
+func TestAgentSelectorEnterDispatchesCommand(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeAgentSelect
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if !got.busy {
+		t.Fatalf("expected busy true")
+	}
+	if cmd == nil {
+		t.Fatalf("expected command dispatch")
+	}
+}
+
+func TestConfirmCreateOnlyWhenPlanMode(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("unexpected command in main mode")
+	}
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v", got.mode)
+	}
+
+	m.mode = modePlanConfirm
+	m.extractedPlan = app.PlanPayload{
+		Goal: "g", Epic: app.PlanItem{Title: "E", Priority: 1}, Task: app.PlanItem{Title: "T", Priority: 1}, Subtasks: []app.PlanItem{{Title: "S", Priority: 2}},
+	}
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(Model)
+	if !got.busy {
+		t.Fatalf("expected busy true")
+	}
+	if cmd == nil {
+		t.Fatalf("expected command in confirm mode")
+	}
+}
+
+func TestAgentSelectErrorKeepsSelectorAndShowsHint(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeAgentSelect
+	m.selectedAgent = "codex"
+
+	next, _ := m.Update(actionResultMsg{err: assertErr("boom")})
+	got := next.(Model)
+	if got.mode != modeAgentSelect {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	if got.errorHint == "" {
+		t.Fatalf("expected error hint")
+	}
+}
+
+func TestAgentSelectSuccessClearsHint(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeAgentSelect
+	m.errorHint = "old"
+
+	next, _ := m.Update(actionResultMsg{status: "Planning pane %3 started with codex (PATH fallback).", paneID: "%3"})
+	got := next.(Model)
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	if got.errorHint != "" {
+		t.Fatalf("errorHint = %q", got.errorHint)
+	}
+	if got.pendingPaneID != "%3" {
+		t.Fatalf("pendingPaneID = %q", got.pendingPaneID)
+	}
+}
+
+type testErr string
+
+func (e testErr) Error() string { return string(e) }
+
+func assertErr(msg string) error { return testErr(msg) }

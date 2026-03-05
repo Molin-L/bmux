@@ -15,8 +15,27 @@ type issuesLoadedMsg struct {
 type actionResultMsg struct {
 	status string
 	prompt string
+	paneID string
 	err    error
 }
+
+type planCapturedMsg struct {
+	plan app.PlanPayload
+	err  error
+}
+
+type hierarchyCreatedMsg struct {
+	result app.HierarchyResult
+	err    error
+}
+
+type viewMode int
+
+const (
+	modeMain viewMode = iota
+	modeAgentSelect
+	modePlanConfirm
+)
 
 type Model struct {
 	svc                  *app.Service
@@ -29,6 +48,14 @@ type Model struct {
 	height               int
 	issueSourceAvailable bool
 	issueSourceReason    string
+	mode                 viewMode
+	agentOptions         []string
+	agentSelected        int
+	pendingPaneID        string
+	selectedAgent        string
+	extractedPlan        app.PlanPayload
+	lastPlanRaw          string
+	errorHint            string
 }
 
 func NewModel(svc *app.Service) Model {
@@ -36,6 +63,8 @@ func NewModel(svc *app.Service) Model {
 		svc:                  svc,
 		status:               "Loading ready issues...",
 		issueSourceAvailable: true,
+		mode:                 modeMain,
+		agentOptions:         []string{"claude", "codex"},
 	}
 }
 
