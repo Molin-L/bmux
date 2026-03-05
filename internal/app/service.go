@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -168,6 +169,8 @@ type RunSummary struct {
 	Finished    int
 	ActiveChaos bool
 }
+
+var nonAlphaNumericToken = regexp.MustCompile(`[^a-z0-9]+`)
 
 func NewService(opts Options) *Service {
 	planPrompt, selfRunPrompt, chaosPrompt := executionPromptTemplates(opts.ExecutionPlanPrompt, opts.ExecutionSelfRunPrompt, opts.ExecutionChaosPrompt)
@@ -721,11 +724,20 @@ func (s *Service) startRunnableTask(ctx context.Context, issueID string, mode mo
 
 	prompt := s.renderModePrompt(mode, issue, taskMeta)
 	usePaneID := strings.TrimSpace(paneID)
+	createdPane := false
 	if usePaneID == "" {
 		usePaneID, err = s.createPane(ctx, taskMeta.WorktreePath)
 		if err != nil {
 			return model.TaskRunMeta{}, err
 		}
+		createdPane = true
+	}
+	title := buildTaskPaneTitle(issueID, issue.Title)
+	if err := s.tmux.SetPaneTitle(ctx, usePaneID, title); err != nil {
+		if createdPane {
+			_ = s.tmux.KillPane(ctx, usePaneID)
+		}
+		return model.TaskRunMeta{}, fmt.Errorf("failed to set pane title %q on %s: %w", title, usePaneID, err)
 	}
 	cmd, _, err := s.resolveAgentCommand("codex")
 	if err != nil {
@@ -778,9 +790,18 @@ func (s *Service) startWaitingTask(ctx context.Context, issueID string, mode mod
 	if err != nil {
 		return model.TaskRunMeta{}, err
 	}
+	issue, err := s.beads.Show(ctx, issueID)
+	if err != nil {
+		return model.TaskRunMeta{}, err
+	}
 	paneID, err := s.createPane(ctx, taskMeta.WorktreePath)
 	if err != nil {
 		return model.TaskRunMeta{}, err
+	}
+	title := buildTaskPaneTitle(issueID, issue.Title)
+	if err := s.tmux.SetPaneTitle(ctx, paneID, title); err != nil {
+		_ = s.tmux.KillPane(ctx, paneID)
+		return model.TaskRunMeta{}, fmt.Errorf("failed to set pane title %q on %s: %w", title, paneID, err)
 	}
 	waitCmd := buildWaitingPaneCommand(blockerID, issueID, taskMeta.Branch)
 	if err := s.tmux.SendKeys(ctx, paneID, waitCmd, true); err != nil {
@@ -1526,6 +1547,27 @@ func sanitizeBranchToken(branch string) string {
 	t := strings.ReplaceAll(branch, "/", "__")
 	t = strings.ReplaceAll(t, string(filepath.Separator), "__")
 	return strings.TrimSpace(t)
+}
+
+func buildTaskPaneTitle(issueID, issueTitle string) string {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		issueID = "task"
+	}
+	return issueID + "-" + normalizeTaskPaneSlug(issueTitle)
+}
+
+func normalizeTaskPaneSlug(title string) string {
+	slug := strings.ToLower(strings.TrimSpace(title))
+	slug = nonAlphaNumericToken.ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 48 {
+		slug = strings.Trim(slug[:48], "-")
+	}
+	if slug == "" {
+		slug = "task"
+	}
+	return slug
 }
 
 func extractMarkedJSON(raw string) (string, error) {

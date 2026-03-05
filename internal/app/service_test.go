@@ -129,12 +129,14 @@ type fakeTmux struct {
 	sendErr         error
 	captureErr      error
 	bufferErr       error
+	titleErr        error
 	sent            []string
 	splitDir        string
 	splitCWD        string
 	splitTarget     string
 	splitCommand    string
 	pasted          []string
+	killed          []string
 	panes           []string
 	titles          map[string]string
 	terminalWidth   int
@@ -249,6 +251,9 @@ func (t *fakeTmux) SetWindowSizeManual(_ context.Context, _ string, width, heigh
 	return nil
 }
 func (t *fakeTmux) SetPaneTitle(_ context.Context, paneID, title string) error {
+	if t.titleErr != nil {
+		return t.titleErr
+	}
 	if t.titles == nil {
 		t.titles = map[string]string{}
 	}
@@ -262,6 +267,7 @@ func (t *fakeTmux) GetPaneTitle(_ context.Context, paneID string) (string, error
 	return t.titles[paneID], nil
 }
 func (t *fakeTmux) KillPane(_ context.Context, paneID string) error {
+	t.killed = append(t.killed, paneID)
 	if len(t.panes) == 0 {
 		return nil
 	}
@@ -702,6 +708,9 @@ func TestStartPlanningPane(t *testing.T) {
 	if len(tmux.sent) != 2 {
 		t.Fatalf("send calls = %d", len(tmux.sent))
 	}
+	if len(tmux.titles) != 0 {
+		t.Fatalf("planning pane should not set task pane title: %#v", tmux.titles)
+	}
 }
 
 func TestStartPlanningPaneSidebarTargetsLastNonSpacerPane(t *testing.T) {
@@ -813,6 +822,9 @@ func TestStartTaskModePlanUsesSafeFlags(t *testing.T) {
 	}
 	if !strings.Contains(tmux.sent[0], "--sandbox workspace-write") || !strings.Contains(tmux.sent[0], "--ask-for-approval on-request") {
 		t.Fatalf("expected plan safety flags in %q", tmux.sent[0])
+	}
+	if got, want := tmux.titles["%8"], "bd-9-plan-task"; got != want {
+		t.Fatalf("pane title = %q, want %q", got, want)
 	}
 }
 
@@ -979,6 +991,61 @@ func TestStartTaskModeWaitingCreatesPendingRun(t *testing.T) {
 	if strings.Contains(waitCmd, "while true; do") {
 		t.Fatalf("waiting command should not use raw shell spinner loop: %q", waitCmd)
 	}
+	if got, want := tmux.titles["%12"], "bd-wait-wait-task"; got != want {
+		t.Fatalf("pane title = %q, want %q", got, want)
+	}
+}
+
+func TestStartTaskModeFailsWhenSettingTitleOnNewPaneFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%18", titleErr: errors.New("title failed")}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-18", Title: "Title fail", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-18-title-fail"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	_, err := svc.StartTaskMode(context.Background(), "bd-18", model.RunModePlan)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "failed to set pane title") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tmux.killed) == 0 || tmux.killed[0] != "%18" {
+		t.Fatalf("expected created pane to be killed, got %#v", tmux.killed)
+	}
+}
+
+func TestStartTaskModeWaitingFailsWhenSettingTitleFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%19", titleErr: errors.New("title failed")}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-19", Title: "Waiting title fail", Status: "open"},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-19-waiting-title-fail"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	_, err := svc.StartTaskModeWaiting(context.Background(), "bd-19", model.RunModePlan, "bd-blocker")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "failed to set pane title") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tmux.killed) == 0 || tmux.killed[0] != "%19" {
+		t.Fatalf("expected created pane to be killed, got %#v", tmux.killed)
+	}
 }
 
 func TestPromotePendingRunsStartsTaskInSamePaneWhenBlockerClosed(t *testing.T) {
@@ -1030,6 +1097,43 @@ func TestPromotePendingRunsStartsTaskInSamePaneWhenBlockerClosed(t *testing.T) {
 	}
 	if runMeta.Pending || runMeta.BlockedByIssueID != "" || runMeta.ExpectedProcess != "codex" {
 		t.Fatalf("unexpected promoted run meta: %+v", runMeta)
+	}
+}
+
+func TestPromotePendingRunsFailsWhenSettingTitleOnReusedPaneFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%20"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-20", Title: "Promote title fail", Status: "open"},
+		showByID: map[string]model.Issue{
+			"bd-blocker": {ID: "bd-blocker", Status: "closed"},
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot: root, WorktreeDir: root + "/.worktrees", Store: state.New(root),
+		Beads: beads, Git: &fakeGit{headBranch: "main", headCommit: "abc123"},
+		Planner:       fakePlanner{d: app.BranchDecision{Branch: "task/bd-20-promote-title-fail"}},
+		PromptBuilder: fakePromptBuilder{}, Tmux: tmux, CodexCommand: "codex",
+	})
+
+	if _, err := svc.StartTaskModeWaiting(context.Background(), "bd-20", model.RunModePlan, "bd-blocker"); err != nil {
+		t.Fatalf("start waiting mode: %v", err)
+	}
+	tmux.titleErr = errors.New("title failed")
+
+	promoted, waiting, err := svc.PromotePendingRuns(context.Background())
+	if err == nil {
+		t.Fatalf("expected promote error")
+	}
+	if promoted != 0 || waiting != 1 {
+		t.Fatalf("promoted=%d waiting=%d", promoted, waiting)
+	}
+	if !strings.Contains(err.Error(), "failed to set pane title") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tmux.killed) != 0 {
+		t.Fatalf("reused pane should not be killed: %#v", tmux.killed)
 	}
 }
 
