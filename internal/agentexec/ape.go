@@ -10,6 +10,8 @@ import (
 	"github.com/Molin-L/bmux/internal/model"
 )
 
+const processStartupGracePeriod = 10 * time.Second
+
 func (e *Executor) StartApe(ctx context.Context) (string, error) {
 	if e.readyIssues == nil {
 		return "", errors.New("ready issues callback is not configured")
@@ -112,6 +114,8 @@ func (e *Executor) TickApe(ctx context.Context) (string, bool, error) {
 
 	queued := 0
 	blocked := 0
+	launchFailed := 0
+	firstLaunchError := ""
 	for _, issue := range readyIssues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
@@ -168,7 +172,10 @@ func (e *Executor) TickApe(ctx context.Context) (string, bool, error) {
 		}
 
 		if _, err := e.startTaskModeInternal(ctx, issueID, model.RunModeApe, ape.SessionID, false, ""); err != nil {
-			finishedSet[issueID] = struct{}{}
+			launchFailed++
+			if firstLaunchError == "" {
+				firstLaunchError = fmt.Sprintf("%s: %s", issueID, compactError(err))
+			}
 			continue
 		}
 		launchedSet[issueID] = struct{}{}
@@ -204,13 +211,17 @@ func (e *Executor) TickApe(ctx context.Context) (string, bool, error) {
 		return "", false, err
 	}
 	status := fmt.Sprintf(
-		"Ape %s: running=%d queued=%d blocked=%d finished=%d",
+		"Ape %s: running=%d queued=%d blocked=%d finished=%d launch_failed=%d",
 		ape.SessionID,
 		runningCount,
 		queued,
 		blocked,
 		len(finishedSet),
+		launchFailed,
 	)
+	if firstLaunchError != "" {
+		status = fmt.Sprintf("%s | first_error=%s", status, firstLaunchError)
+	}
 	return status, done, nil
 }
 
@@ -242,6 +253,10 @@ func (e *Executor) ReconcileRunLocks(ctx context.Context) error {
 		} else if strings.TrimSpace(run.ExpectedProcess) != "" {
 			currentCmd, cmdErr := e.tmux.GetPaneCurrentCommand(ctx, run.PaneID)
 			if cmdErr == nil && !strings.EqualFold(strings.TrimSpace(currentCmd), strings.TrimSpace(run.ExpectedProcess)) {
+				startedAt := run.StartedAt
+				if !startedAt.IsZero() && time.Since(startedAt) < processStartupGracePeriod {
+					continue
+				}
 				remove = true
 			}
 		}
@@ -252,6 +267,20 @@ func (e *Executor) ReconcileRunLocks(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func compactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	const maxLen = 120
+	if len(text) > maxLen {
+		return text[:maxLen-3] + "..."
+	}
+	return text
 }
 
 func (e *Executor) PromotePendingRuns(ctx context.Context) (int, int, error) {

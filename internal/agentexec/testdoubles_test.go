@@ -3,6 +3,7 @@ package agentexec
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Molin-L/bmux/internal/model"
 )
@@ -67,6 +68,9 @@ type fakeTmux struct {
 	killed          []string
 	panes           []string
 	titles          map[string]string
+	currentCommand  string
+	currentByPane   map[string]string
+	currentCmdErr   error
 	terminalWidth   int
 	terminalHeight  int
 	windowWidth     int
@@ -144,7 +148,21 @@ func (t *fakeTmux) SetBuffer(_ context.Context, _ string, content string) error 
 }
 func (t *fakeTmux) PasteBuffer(context.Context, string, string) error { return nil }
 func (t *fakeTmux) DeleteBuffer(context.Context, string) error        { return nil }
-func (t *fakeTmux) GetPaneCurrentCommand(context.Context, string) (string, error) {
+func (t *fakeTmux) GetPaneCurrentCommand(_ context.Context, paneID string) (string, error) {
+	if t.currentCmdErr != nil {
+		return "", t.currentCmdErr
+	}
+	if t.currentByPane != nil {
+		if cmd, ok := t.currentByPane[strings.TrimSpace(paneID)]; ok {
+			return cmd, nil
+		}
+		if cmd, ok := t.currentByPane["*"]; ok {
+			return cmd, nil
+		}
+	}
+	if strings.TrimSpace(t.currentCommand) != "" {
+		return t.currentCommand, nil
+	}
 	return "codex", nil
 }
 func (t *fakeTmux) GetWindowDimensions(context.Context) (int, int, error) {

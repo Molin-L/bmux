@@ -83,7 +83,7 @@ func (e *Executor) startTaskModeInternal(ctx context.Context, issueID string, mo
 	if pending {
 		return e.startWaitingTask(ctx, issueID, mode, apeSessionID, blockerID)
 	}
-	claimBeforeStart := true
+	claimBeforeStart := mode != model.RunModeApe
 	return e.startRunnableTask(ctx, issueID, mode, apeSessionID, "", claimBeforeStart)
 }
 
@@ -111,6 +111,7 @@ func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode m
 	prompt := e.renderModePrompt(mode, issue, taskMeta)
 	usePaneID := strings.TrimSpace(paneID)
 	createdPane := false
+	runLockPersisted := false
 	if usePaneID == "" {
 		usePaneID, err = e.createPane(ctx, taskMeta.WorktreePath)
 		if err != nil {
@@ -134,9 +135,23 @@ func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode m
 		return model.TaskRunMeta{}, err
 	}
 	if err := e.tmux.SendKeys(ctx, usePaneID, launchCmd, true); err != nil {
+		if createdPane {
+			_ = e.tmux.KillPane(ctx, usePaneID)
+		}
 		return model.TaskRunMeta{}, err
 	}
-	_ = e.waitForPaneCommand(ctx, usePaneID, "codex", 5*time.Second)
+
+	if mode == model.RunModeApe {
+		if err := e.waitForPaneCommand(ctx, usePaneID, "codex", 5*time.Second); err != nil {
+			_ = e.tmux.SendKeys(ctx, usePaneID, "C-c", false)
+			if createdPane {
+				_ = e.tmux.KillPane(ctx, usePaneID)
+			}
+			return model.TaskRunMeta{}, err
+		}
+	} else {
+		_ = e.waitForPaneCommand(ctx, usePaneID, "codex", 5*time.Second)
+	}
 
 	content, _ := e.tmux.CapturePane(ctx, usePaneID, 100)
 	if hasTrustPrompt(content) {
@@ -158,11 +173,29 @@ func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode m
 		StartedAt:       now,
 		UpdatedAt:       now,
 		ExpectedProcess: "codex",
-		ApeSessionID:  apeSessionID,
+		ApeSessionID:    apeSessionID,
 	}
 	if err := e.store.RunLockUpsert(run); err != nil {
+		if createdPane {
+			_ = e.tmux.KillPane(ctx, usePaneID)
+		}
 		return model.TaskRunMeta{}, err
 	}
+	runLockPersisted = true
+
+	if !claimBeforeStart {
+		if err := e.beads.Claim(ctx, issueID); err != nil {
+			_ = e.tmux.SendKeys(ctx, usePaneID, "C-c", false)
+			if runLockPersisted {
+				_ = e.store.RunLockDelete(issueID)
+			}
+			if createdPane {
+				_ = e.tmux.KillPane(ctx, usePaneID)
+			}
+			return model.TaskRunMeta{}, err
+		}
+	}
+
 	return run, nil
 }
 
@@ -208,7 +241,7 @@ func (e *Executor) startWaitingTask(ctx context.Context, issueID string, mode mo
 		WaitStartedAt:    now,
 		StartedAt:        now,
 		UpdatedAt:        now,
-		ApeSessionID:   apeSessionID,
+		ApeSessionID:     apeSessionID,
 	}
 	if err := e.store.RunLockUpsert(run); err != nil {
 		return model.TaskRunMeta{}, err

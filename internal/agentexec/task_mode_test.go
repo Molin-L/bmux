@@ -112,6 +112,78 @@ func TestStartTaskModeApeClaimsIssue(t *testing.T) {
 	}
 }
 
+func TestStartTaskModeApeDoesNotClaimWhenPaneCreationFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{splitErr: errors.New("split failed")}
+	beads := &fakeBeads{issue: model.Issue{ID: "bd-ape", Title: "Ape run", Status: "open"}}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-ape": {IssueID: "bd-ape", Branch: "task/bd-ape-run", WorktreePath: root + "/.worktrees/task__bd-ape-run", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	_, err := e.StartTaskMode(context.Background(), "bd-ape", model.RunModeApe)
+	if err == nil {
+		t.Fatalf("expected pane creation error")
+	}
+	if len(beads.claimed) != 0 {
+		t.Fatalf("ape issue should not be claimed when launch fails: %#v", beads.claimed)
+	}
+}
+
+func TestStartTaskModeApeDoesNotClaimWhenSendKeysFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%41", sendErr: errors.New("send failed")}
+	beads := &fakeBeads{issue: model.Issue{ID: "bd-ape", Title: "Ape run", Status: "open"}}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-ape": {IssueID: "bd-ape", Branch: "task/bd-ape-run", WorktreePath: root + "/.worktrees/task__bd-ape-run", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	_, err := e.StartTaskMode(context.Background(), "bd-ape", model.RunModeApe)
+	if err == nil {
+		t.Fatalf("expected send keys error")
+	}
+	if len(beads.claimed) != 0 {
+		t.Fatalf("ape issue should not be claimed when command send fails: %#v", beads.claimed)
+	}
+	if len(tmux.killed) == 0 || tmux.killed[0] != "%41" {
+		t.Fatalf("expected created pane to be killed on send failure, got %#v", tmux.killed)
+	}
+}
+
+func TestStartTaskModeApeDoesNotClaimWhenStartupVerificationFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		paneID:         "%42",
+		panes:          []string{"%1", "%42"},
+		currentCommand: "zsh",
+	}
+	beads := &fakeBeads{issue: model.Issue{ID: "bd-ape", Title: "Ape run", Status: "open"}}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-ape": {IssueID: "bd-ape", Branch: "task/bd-ape-run", WorktreePath: root + "/.worktrees/task__bd-ape-run", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	_, err := e.StartTaskMode(context.Background(), "bd-ape", model.RunModeApe)
+	if err == nil {
+		t.Fatalf("expected startup verification error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "timed out waiting for codex startup") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(beads.claimed) != 0 {
+		t.Fatalf("ape issue should not be claimed when startup verification fails: %#v", beads.claimed)
+	}
+	if len(tmux.killed) == 0 || tmux.killed[0] != "%42" {
+		t.Fatalf("expected created pane to be killed on startup verification failure, got %#v", tmux.killed)
+	}
+	if _, ok, lockErr := e.store.RunLockByIssueID("bd-ape"); lockErr != nil {
+		t.Fatalf("lookup run lock: %v", lockErr)
+	} else if ok {
+		t.Fatal("run lock should not persist when startup verification fails")
+	}
+}
+
 func TestStartTaskModeRejectsDuplicateRunningTask(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
