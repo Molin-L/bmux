@@ -35,7 +35,7 @@ func TestViewRendersTreeRowsWithSelectionAndBlockedBy(t *testing.T) {
 	if !strings.Contains(out, "Epic: No Epic") {
 		t.Fatalf("missing no-epic header in view:\n%s", out)
 	}
-	if !strings.Contains(out, "▶● Task") {
+	if !strings.Contains(out, "▶● bd-task Task") {
 		t.Fatalf("missing selected markers in view:\n%s", out)
 	}
 	if !strings.Contains(out, "id=bd-task | p=1 | status=open | run=- | blocked_by=bd-parent") {
@@ -50,10 +50,10 @@ func TestViewRendersTreeRowsWithSelectionAndBlockedBy(t *testing.T) {
 	if strings.Contains(out, "run=completed(") {
 		t.Fatalf("run should never render completed state from local storage:\n%s", out)
 	}
-	if !strings.Contains(out, "▶● Task") {
+	if !strings.Contains(out, "▶● bd-task Task") {
 		t.Fatalf("missing depth-1 tree indentation in view:\n%s", out)
 	}
-	if !strings.Contains(out, "○   Subtask") {
+	if !strings.Contains(out, "○   bd-sub Subtask") {
 		t.Fatalf("missing depth-2 tree indentation in view:\n%s", out)
 	}
 }
@@ -190,6 +190,97 @@ func TestViewRendersPendingRunWithBlockingInfo(t *testing.T) {
 	}
 	if !strings.Contains(out, "blocked_by=bd-blocker") {
 		t.Fatalf("expected blocked_by from pending run in view:\n%s", out)
+	}
+}
+
+func TestViewCompactModeHidesInlineMetadataAndShowsDetailsPanel(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.taskViewportWidth = 63
+	m.taskViewportHeight = 24
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-task", Title: "Task", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-task")
+	m.blockedBy = map[string]string{"bd-task": "bd-parent"}
+
+	out := stripANSI(m.View())
+	if strings.Contains(out, "id=bd-task | p=1 | status=open | run=-") {
+		t.Fatalf("compact view should not render inline metadata rows:\n%s", out)
+	}
+	if !strings.Contains(out, "Selected Task") {
+		t.Fatalf("compact view should render selected task details block:\n%s", out)
+	}
+	if !strings.Contains(out, "blocked_by=bd-parent") {
+		t.Fatalf("details block should include blocked_by:\n%s", out)
+	}
+}
+
+func TestViewCompactModeShowsRunSymbols(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:   "bd-run",
+		Mode:      model.RunModePlan,
+		Agent:     "codex",
+		PaneID:    "%2",
+		Pending:   false,
+		StartedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed running run: %v", err)
+	}
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:          "bd-pending",
+		Mode:             model.RunModePlan,
+		Agent:            "codex",
+		PaneID:           "%3",
+		Pending:          true,
+		BlockedByIssueID: "bd-run",
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed pending run: %v", err)
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       store,
+	})
+
+	m := NewModel(svc)
+	m.taskViewportWidth = 63
+	m.taskViewportHeight = 24
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-run", Title: "Running task", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-pending", Title: "Pending task", Status: "open", Priority: 2, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-run")
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "⏳") {
+		t.Fatalf("compact view should show hourglass marker for pending run:\n%s", out)
+	}
+	if !strings.Contains(out, "⠋") {
+		t.Fatalf("compact view should show spinner marker for running task:\n%s", out)
+	}
+}
+
+func TestViewUsesVerboseModeAtThresholdWidth(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.taskViewportWidth = 64
+	m.taskViewportHeight = 24
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-task", Title: "Task", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-task")
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "id=bd-task | p=1 | status=open") {
+		t.Fatalf("width=64 should use verbose rendering:\n%s", out)
 	}
 }
 

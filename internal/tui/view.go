@@ -39,6 +39,14 @@ type tasksRender struct {
 	lineCount int
 }
 
+type taskRuntimeInfo struct {
+	branch  string
+	run     model.LiveRun
+	runText string
+	blocked string
+	pane    string
+}
+
 func (m Model) View() string {
 	title := titleStyle.Render("bmux")
 	help := helpStyle.Render("↑/↓ move • PgUp/PgDn/Home/End scroll • Space select/deselect task(s) • Shift+Tab cycle mode • Enter start • n legacy planning • c capture • p PR • m merge • x cleanup • r refresh • q quit")
@@ -54,14 +62,7 @@ func (m Model) View() string {
 
 	body := []string{lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", help), lipgloss.JoinHorizontal(lipgloss.Left, meta...)}
 
-	width := m.taskViewportWidth
-	if width <= 0 {
-		width = 96
-	}
-	height := m.taskViewportHeight
-	if height <= 0 {
-		height = 18
-	}
+	width, height, detailsHeight := m.taskViewportLayout()
 	render := m.renderTasksContent(width)
 	offset := m.taskViewportYOffset
 	maxOffset := max(0, render.lineCount-height)
@@ -73,6 +74,9 @@ func (m Model) View() string {
 	}
 	tasks := clipViewport(render.content, offset, height)
 	body = append(body, panelStyle.Render(tasks))
+	if isCompactViewportWidth(width) && detailsHeight > 0 {
+		body = append(body, panelStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight)))
+	}
 
 	if m.busy {
 		body = append(body, busyStyle.Render("Working..."))
@@ -104,6 +108,7 @@ func (m Model) renderTasksContent(width int) tasksRender {
 	if width <= 0 {
 		width = 96
 	}
+	compact := isCompactViewportWidth(width)
 	summary := app.RunSummary{}
 	if m.svc != nil {
 		issueIDs := make([]string, 0, len(m.issues))
@@ -133,31 +138,7 @@ func (m Model) renderTasksContent(width int) tasksRender {
 			lines = append(lines, epicStyle.Render("Epic: "+title))
 			lines = append(lines, "")
 		case issueRowIssue:
-			branch := "(no branch)"
-			runState := "-"
-			blockedBy := "-"
-			paneText := "-"
-			if m.svc != nil {
-				if meta, ok := safeGetTaskMeta(m.svc, row.issue.ID); ok && strings.TrimSpace(meta.Branch) != "" {
-					branch = meta.Branch
-				}
-				if run, ok := safeGetLiveRun(m.svc, row.issue.ID); ok && run.Running {
-					if run.Pending {
-						runState = fmt.Sprintf("waiting(%s)", run.Mode)
-						if blockerID := strings.TrimSpace(run.BlockedByIssueID); blockerID != "" {
-							blockedBy = blockerID
-						}
-					} else {
-						runState = fmt.Sprintf("running(%s)", run.Mode)
-					}
-					if strings.TrimSpace(run.PaneID) != "" {
-						paneText = run.PaneID
-					}
-				}
-			}
-			if blockerID := strings.TrimSpace(m.blockedBy[row.issue.ID]); blockerID != "" {
-				blockedBy = blockerID
-			}
+			runtime := m.issueRuntimeInfo(row.issue.ID)
 
 			selectedCursor := " "
 			if i == m.selected {
@@ -169,19 +150,29 @@ func (m Model) renderTasksContent(width int) tasksRender {
 			}
 
 			nodePrefix := fmt.Sprintf("%s%s %s", selectedCursor, taskMark, issueIndentPrefix(m.rows, i))
+			if compact {
+				if runMarker := m.compactRunMarker(runtime.run); runMarker != "" {
+					nodePrefix += runMarker + " "
+				}
+			}
 			nodeIndent := strings.Repeat(" ", lipgloss.Width(nodePrefix))
-			metaPrefix := strings.Repeat(" ", max(1, lipgloss.Width(nodePrefix)-2))
-
-			metaLine := fmt.Sprintf("id=%s | p=%d | status=%s | run=%s | blocked_by=%s | pane=%s | branch=%s",
-				row.issue.ID, row.issue.Priority, row.issue.Status, runState, blockedBy, paneText, branch)
 
 			rowLines := []string{}
-			rowLines = append(rowLines, wrapWithPrefixes(row.issue.Title, nodePrefix, nodeIndent, width)...)
-			metaLines := wrapWithPrefixes(metaLine, metaPrefix, metaPrefix, width)
-			for idx := range metaLines {
-				metaLines[idx] = styleMetaLine(metaLines[idx])
+			title := strings.TrimSpace(strings.TrimSpace(row.issue.ID) + " " + strings.TrimSpace(row.issue.Title))
+			if title == "" {
+				title = row.issue.Title
 			}
-			rowLines = append(rowLines, metaLines...)
+			rowLines = append(rowLines, wrapWithPrefixes(title, nodePrefix, nodeIndent, width)...)
+			if !compact {
+				metaPrefix := strings.Repeat(" ", max(1, lipgloss.Width(nodePrefix)-2))
+				metaLine := fmt.Sprintf("id=%s | p=%d | status=%s | run=%s | blocked_by=%s | pane=%s | branch=%s",
+					row.issue.ID, row.issue.Priority, row.issue.Status, runtime.runText, runtime.blocked, runtime.pane, runtime.branch)
+				metaLines := wrapWithPrefixes(metaLine, metaPrefix, metaPrefix, width)
+				for idx := range metaLines {
+					metaLines[idx] = styleMetaLine(metaLines[idx])
+				}
+				rowLines = append(rowLines, metaLines...)
+			}
 
 			start := len(lines)
 			if i == m.selected {
@@ -206,6 +197,92 @@ func (m Model) renderTasksContent(width int) tasksRender {
 		rowEnds:   rowEnds,
 		lineCount: len(strings.Split(content, "\n")),
 	}
+}
+
+func (m Model) issueRuntimeInfo(issueID string) taskRuntimeInfo {
+	info := taskRuntimeInfo{
+		branch:  "(no branch)",
+		runText: "-",
+		blocked: "-",
+		pane:    "-",
+	}
+	if m.svc != nil {
+		if meta, ok := safeGetTaskMeta(m.svc, issueID); ok && strings.TrimSpace(meta.Branch) != "" {
+			info.branch = meta.Branch
+		}
+		if run, ok := safeGetLiveRun(m.svc, issueID); ok && run.Running {
+			info.run = run
+			if run.Pending {
+				info.runText = fmt.Sprintf("waiting(%s)", run.Mode)
+				if blockerID := strings.TrimSpace(run.BlockedByIssueID); blockerID != "" {
+					info.blocked = blockerID
+				}
+			} else {
+				info.runText = fmt.Sprintf("running(%s)", run.Mode)
+			}
+			if strings.TrimSpace(run.PaneID) != "" {
+				info.pane = run.PaneID
+			}
+		}
+	}
+	if blockerID := strings.TrimSpace(m.blockedBy[issueID]); blockerID != "" {
+		info.blocked = blockerID
+	}
+	return info
+}
+
+func (m Model) compactRunMarker(run model.LiveRun) string {
+	if !run.Running {
+		return ""
+	}
+	if run.Pending {
+		return "⏳"
+	}
+	return m.currentSpinnerFrame()
+}
+
+func (m Model) currentSpinnerFrame() string {
+	if len(spinnerFrames) == 0 {
+		return ""
+	}
+	idx := m.spinnerFrame % len(spinnerFrames)
+	if idx < 0 {
+		idx = 0
+	}
+	return spinnerFrames[idx]
+}
+
+func (m Model) renderSelectedTaskDetails(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
+	lines := []string{headerStyle.Render("Selected Task")}
+	issue, ok := selectedIssueFromRows(m.rows, m.selected)
+	if !ok {
+		lines = append(lines, "No task selected")
+		if len(lines) > height {
+			lines = lines[:height]
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	runtime := m.issueRuntimeInfo(issue.ID)
+	raw := []string{
+		fmt.Sprintf("id=%s | p=%d | status=%s", issue.ID, issue.Priority, issue.Status),
+		fmt.Sprintf("run=%s | pane=%s", runtime.runText, runtime.pane),
+		fmt.Sprintf("blocked_by=%s", runtime.blocked),
+		fmt.Sprintf("branch=%s", runtime.branch),
+	}
+	for _, line := range raw {
+		wrapped := wrapWithPrefixes(line, "", "", width)
+		for _, w := range wrapped {
+			lines = append(lines, styleMetaLine(w))
+		}
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderAgentSelector() string {

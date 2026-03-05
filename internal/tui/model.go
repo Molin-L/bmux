@@ -53,6 +53,8 @@ type blockedByLoadedMsg struct {
 	err       error
 }
 
+type spinnerTickMsg struct{}
+
 type batchLaunchResultMsg struct {
 	mode    model.RunMode
 	started map[string]string
@@ -68,6 +70,15 @@ const (
 	modePlanConfirm
 )
 
+const (
+	compactViewportThreshold = 64
+	taskViewportMinWidth     = 24
+	compactDetailsMinLines   = 4
+	compactDetailsMaxLines   = 6
+)
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 type Model struct {
 	svc                  *app.Service
 	issues               []model.Issue
@@ -79,6 +90,7 @@ type Model struct {
 	taskViewportYOffset  int
 	taskViewportWidth    int
 	taskViewportHeight   int
+	taskDetailsHeight    int
 	status               string
 	prompt               string
 	busy                 bool
@@ -96,6 +108,7 @@ type Model struct {
 	extractedPlan        app.PlanPayload
 	lastPlanRaw          string
 	errorHint            string
+	spinnerFrame         int
 }
 
 func NewModel(svc *app.Service) Model {
@@ -114,7 +127,7 @@ func NewModel(svc *app.Service) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadIssuesCmd(), m.reconcileRunsCmd(), m.loadBlockedByCmd())
+	return tea.Batch(m.loadIssuesCmd(), m.reconcileRunsCmd(), m.loadBlockedByCmd(), m.spinnerTickCmd())
 }
 
 func Run(svc *app.Service) error {

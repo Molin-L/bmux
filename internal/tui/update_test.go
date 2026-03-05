@@ -518,6 +518,32 @@ func TestViewportFollowsSelectedIssueOnNavigation(t *testing.T) {
 	}
 }
 
+func TestTaskViewportWidthFloorIs24(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.width = 10
+
+	gotW, _ := m.taskViewportSize()
+	if gotW != 24 {
+		t.Fatalf("width floor = %d, want 24", gotW)
+	}
+}
+
+func TestSpinnerTickAdvancesFrameAndReschedules(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.spinnerFrame = len(spinnerFrames) - 1
+
+	next, cmd := m.Update(spinnerTickMsg{})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected spinner tick to reschedule")
+	}
+	if got.spinnerFrame != 0 {
+		t.Fatalf("spinnerFrame = %d, want 0", got.spinnerFrame)
+	}
+}
+
 type testErr string
 
 func (e testErr) Error() string { return string(e) }

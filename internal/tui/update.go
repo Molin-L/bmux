@@ -126,6 +126,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeMain
 		m.status = fmt.Sprintf("Created epic %s, task %s, subtasks=%d", msg.result.EpicID, msg.result.TaskID, len(msg.result.SubtaskIDs))
 		return m, nil
+	case spinnerTickMsg:
+		if len(spinnerFrames) > 0 {
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		}
+		m.refreshTaskViewport(false)
+		return m, m.spinnerTickCmd()
 	case tea.KeyMsg:
 		if m.mode == modeAgentSelect {
 			switch msg.String() {
@@ -404,6 +410,12 @@ func (m Model) loadBlockedByCmd() tea.Cmd {
 	})
 }
 
+func (m Model) spinnerTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
+
 func unavailableIssuesStatus(reason string) string {
 	if reason == "" {
 		return "No ready issues. Issue source is unavailable."
@@ -419,7 +431,22 @@ func (m Model) selectedIssueID() (string, bool) {
 	return issue.ID, true
 }
 
-func (m *Model) taskViewportSize() (int, int) {
+func isCompactViewportWidth(width int) bool {
+	return width < compactViewportThreshold
+}
+
+func compactDetailsHeight(taskAreaHeight int) int {
+	height := taskAreaHeight / 4
+	if height < compactDetailsMinLines {
+		height = compactDetailsMinLines
+	}
+	if height > compactDetailsMaxLines {
+		height = compactDetailsMaxLines
+	}
+	return height
+}
+
+func (m *Model) taskViewportLayout() (int, int, int) {
 	width := m.taskViewportWidth
 	if m.width > 0 {
 		width = m.width - panelStyle.GetHorizontalFrameSize()
@@ -427,11 +454,14 @@ func (m *Model) taskViewportSize() (int, int) {
 	if width <= 0 {
 		width = 96
 	}
-	if width < 48 {
-		width = 48
+	if width < taskViewportMinWidth {
+		width = taskViewportMinWidth
 	}
 
-	height := m.taskViewportHeight
+	height := m.taskViewportHeight + m.taskDetailsHeight
+	if height <= 0 {
+		height = m.taskViewportHeight
+	}
 	if m.height > 0 {
 		reserved := 6
 		if m.busy {
@@ -457,16 +487,31 @@ func (m *Model) taskViewportSize() (int, int) {
 	if height <= 0 {
 		height = 18
 	}
+
+	detailsHeight := 0
+	if isCompactViewportWidth(width) {
+		detailsHeight = compactDetailsHeight(height)
+		if height-detailsHeight < 6 {
+			detailsHeight = max(0, height-6)
+		}
+		height -= detailsHeight
+	}
 	if height < 6 {
 		height = 6
 	}
+	return width, height, detailsHeight
+}
+
+func (m *Model) taskViewportSize() (int, int) {
+	width, height, _ := m.taskViewportLayout()
 	return width, height
 }
 
 func (m *Model) refreshTaskViewport(ensureSelection bool) {
-	width, height := m.taskViewportSize()
+	width, height, detailsHeight := m.taskViewportLayout()
 	m.taskViewportWidth = width
 	m.taskViewportHeight = height
+	m.taskDetailsHeight = detailsHeight
 	render := m.renderTasksContent(width)
 	maxOffset := max(0, render.lineCount-height)
 	if ensureSelection && m.selected >= 0 && m.selected < len(render.rowStarts) {
