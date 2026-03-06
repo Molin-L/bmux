@@ -98,17 +98,22 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 	baseLayout := CalculateOptimalLayout(len(realContentPanes), terminalW, terminalH, m.cfg)
 	needsSpacer := NeedsSpacerPane(len(realContentPanes), baseLayout, m.cfg)
 
-	if existingSpacerID != "" {
+	if existingSpacerID != "" && !needsSpacer {
 		_ = m.tmux.KillPane(ctx, existingSpacerID)
+		existingSpacerID = ""
 	}
 
 	spacerID := ""
 	if needsSpacer && len(realContentPanes) > 0 {
-		lastContentPaneID := realContentPanes[len(realContentPanes)-1]
-		newPaneID, splitErr := m.tmux.SplitPaneOnTargetWithCommand(ctx, "right", "", lastContentPaneID, "cat")
-		if splitErr == nil && strings.TrimSpace(newPaneID) != "" {
-			spacerID = strings.TrimSpace(newPaneID)
-			_ = m.tmux.SetPaneTitle(ctx, spacerID, SpacerPaneTitle)
+		if strings.TrimSpace(existingSpacerID) != "" {
+			spacerID = strings.TrimSpace(existingSpacerID)
+		} else {
+			lastContentPaneID := realContentPanes[len(realContentPanes)-1]
+			newPaneID, splitErr := m.tmux.SplitPaneOnTargetWithCommand(ctx, "right", "", lastContentPaneID, "cat")
+			if splitErr == nil && strings.TrimSpace(newPaneID) != "" {
+				spacerID = strings.TrimSpace(newPaneID)
+				_ = m.tmux.SetPaneTitle(ctx, spacerID, SpacerPaneTitle)
+			}
 		}
 	}
 

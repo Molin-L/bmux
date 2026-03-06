@@ -103,6 +103,13 @@ rebuild_git_baseline() {
   git add -A
   git commit -q -m "${BASELINE_MESSAGE}"
   git branch -M main
+  git worktree prune >/dev/null 2>&1 || true
+  while IFS= read -r branch; do
+    if [[ -z "${branch}" || "${branch}" == "main" ]]; then
+      continue
+    fi
+    git branch -D "${branch}" >/dev/null 2>&1 || true
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads)
   git reset -q --hard
 }
 
