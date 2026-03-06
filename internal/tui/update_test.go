@@ -3,9 +3,11 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Molin-L/bmux/internal/app"
 	"github.com/Molin-L/bmux/internal/model"
+	"github.com/Molin-L/bmux/internal/state"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -296,6 +298,115 @@ func TestActionWithNoIssuesRemainsNoop(t *testing.T) {
 	}
 	if got.busy {
 		t.Fatalf("expected not busy")
+	}
+}
+
+func TestQuitKeyQuitsImmediatelyWhenNoProtectedPanels(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	assertQuitCmd(t, cmd)
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v, want modeMain", got.mode)
+	}
+}
+
+func TestQuitKeyEntersConfirmModeWhenTaskRunPanelsExist(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:   "bd-1",
+		PaneID:    "%2",
+		Mode:      model.RunModePlan,
+		StartedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed run lock: %v", err)
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       store,
+	})
+	m := NewModel(svc)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no immediate quit command")
+	}
+	if got.mode != modeQuitConfirm {
+		t.Fatalf("mode = %v, want modeQuitConfirm", got.mode)
+	}
+	if got.quitConfirmPanelCount != 1 {
+		t.Fatalf("quitConfirmPanelCount = %d, want 1", got.quitConfirmPanelCount)
+	}
+}
+
+func TestQuitKeyEntersConfirmModeWhenOnlyPlanningPaneExists(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.pendingPaneID = "%9"
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no immediate quit command")
+	}
+	if got.mode != modeQuitConfirm {
+		t.Fatalf("mode = %v, want modeQuitConfirm", got.mode)
+	}
+	if got.quitConfirmPanelCount != 1 {
+		t.Fatalf("quitConfirmPanelCount = %d, want 1", got.quitConfirmPanelCount)
+	}
+}
+
+func TestQuitConfirmModeEnterQuits(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeQuitConfirm
+	m.quitConfirmPanelCount = 2
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = next.(Model)
+	assertQuitCmd(t, cmd)
+}
+
+func TestQuitConfirmModeRepeatQuitKeysQuit(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeQuitConfirm
+	m.quitConfirmPanelCount = 2
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = next.(Model)
+	assertQuitCmd(t, cmd)
+
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_ = next.(Model)
+	assertQuitCmd(t, cmd)
+}
+
+func TestQuitConfirmModeEscCancels(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeQuitConfirm
+	m.quitConfirmPanelCount = 3
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command")
+	}
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v, want modeMain", got.mode)
+	}
+	if got.quitConfirmPanelCount != 0 {
+		t.Fatalf("quitConfirmPanelCount = %d, want 0", got.quitConfirmPanelCount)
 	}
 }
 
@@ -845,6 +956,27 @@ func TestTaskViewportWidthFloorIs24(t *testing.T) {
 	}
 }
 
+func TestTaskViewportLayoutReservesCappedStatusFooterLines(t *testing.T) {
+	t.Parallel()
+	base := NewModel(nil)
+	base.width = 120
+	base.height = 40
+	base.status = ""
+	base.statusDetails = nil
+
+	_, baseHeight, _ := base.taskViewportLayout()
+
+	withFooter := base
+	withFooter.status = "Loaded 5 issues"
+	withFooter.statusDetails = []string{"line-1", "line-2", "line-3", "line-4"}
+
+	_, withFooterHeight, _ := withFooter.taskViewportLayout()
+
+	if got := baseHeight - withFooterHeight; got != 4 {
+		t.Fatalf("height reduction = %d, want 4 (top margin + headline + max 2 detail lines)", got)
+	}
+}
+
 func TestSpinnerTickAdvancesFrameAndReschedules(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
@@ -865,3 +997,14 @@ type testErr string
 func (e testErr) Error() string { return string(e) }
 
 func assertErr(msg string) error { return testErr(msg) }
+
+func assertQuitCmd(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected quit command")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	}
+}

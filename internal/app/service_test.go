@@ -9,6 +9,7 @@ import (
 
 	"github.com/Molin-L/bmux/internal/app"
 	"github.com/Molin-L/bmux/internal/errorsx"
+	"github.com/Molin-L/bmux/internal/layout"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
@@ -229,6 +230,8 @@ type fakeTmux struct {
 	killed          []string
 	panes           []string
 	titles          map[string]string
+	currentCommand  string
+	currentByPane   map[string]string
 	terminalWidth   int
 	terminalHeight  int
 	windowWidth     int
@@ -314,7 +317,15 @@ func (t *fakeTmux) SetBuffer(_ context.Context, _ string, content string) error 
 }
 func (t *fakeTmux) PasteBuffer(context.Context, string, string) error { return nil }
 func (t *fakeTmux) DeleteBuffer(context.Context, string) error        { return nil }
-func (t *fakeTmux) GetPaneCurrentCommand(context.Context, string) (string, error) {
+func (t *fakeTmux) GetPaneCurrentCommand(_ context.Context, paneID string) (string, error) {
+	if t.currentByPane != nil {
+		if cmd, ok := t.currentByPane[strings.TrimSpace(paneID)]; ok {
+			return cmd, nil
+		}
+	}
+	if strings.TrimSpace(t.currentCommand) != "" {
+		return t.currentCommand, nil
+	}
 	return "codex", nil
 }
 func (t *fakeTmux) GetWindowDimensions(context.Context) (int, int, error) {
@@ -438,6 +449,132 @@ func TestOpenTaskReusesExistingBranch(t *testing.T) {
 	}
 	if git.addedBranch != "" {
 		t.Fatalf("expected no new worktree, got %q", git.addedBranch)
+	}
+}
+
+func TestShutdownManagedPanesKillsTrackedAndAuxPanesAndClearsState(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+	now := time.Now().UTC()
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:   "bd-1",
+		PaneID:    "%2",
+		Mode:      model.RunModePlan,
+		StartedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed run lock bd-1: %v", err)
+	}
+	if err := store.RunLockUpsert(model.TaskRunMeta{
+		IssueID:   "bd-2",
+		PaneID:    "%3",
+		Mode:      model.RunModeSelfRun,
+		StartedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed run lock bd-2: %v", err)
+	}
+	if err := store.SetApeState(&model.ApeState{
+		Active:          true,
+		PendingIssueIDs: []string{"bd-1"},
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("seed ape state: %v", err)
+	}
+
+	tmux := &fakeTmux{
+		terminalWidth:  220,
+		terminalHeight: 60,
+		panes:          []string{"%1", "%2", "%3", "%9"},
+		titles: map[string]string{
+			"%9": layout.SpacerPaneTitle,
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       store,
+		Tmux:        tmux,
+	})
+
+	if err := svc.ShutdownManagedPanes(context.Background(), "%8"); err != nil {
+		t.Fatalf("shutdown managed panes: %v", err)
+	}
+
+	killedSet := map[string]struct{}{}
+	for _, paneID := range tmux.killed {
+		killedSet[paneID] = struct{}{}
+	}
+	for _, paneID := range []string{"%2", "%3", "%8", "%9"} {
+		if _, ok := killedSet[paneID]; !ok {
+			t.Fatalf("expected pane %s killed, got %#v", paneID, tmux.killed)
+		}
+	}
+	if _, ok, err := store.RunLockByIssueID("bd-1"); err != nil {
+		t.Fatalf("run lock lookup bd-1: %v", err)
+	} else if ok {
+		t.Fatalf("expected bd-1 run lock deleted")
+	}
+	if _, ok, err := store.RunLockByIssueID("bd-2"); err != nil {
+		t.Fatalf("run lock lookup bd-2: %v", err)
+	} else if ok {
+		t.Fatalf("expected bd-2 run lock deleted")
+	}
+	if _, ok, err := store.ApeState(); err != nil {
+		t.Fatalf("ape state lookup: %v", err)
+	} else if ok {
+		t.Fatalf("expected ape state cleared")
+	}
+	if tmux.windowSizeCalls == 0 {
+		t.Fatalf("expected window size restore call")
+	}
+	if tmux.windowWidth != 220 || tmux.windowHeight != 60 {
+		t.Fatalf("expected restored window size 220x60, got %dx%d", tmux.windowWidth, tmux.windowHeight)
+	}
+}
+
+func TestShutdownManagedPanesKillsLegacyAndCatAuxPanes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := state.New(root)
+
+	tmux := &fakeTmux{
+		panes: []string{"%1", "%2", "%3", "%4"},
+		titles: map[string]string{
+			"%2": "bmux-placeholder",
+			"%3": "Welcome",
+			"%4": "",
+		},
+		currentByPane: map[string]string{
+			"%1": "bmux",
+			"%2": "cat",
+			"%3": "cat",
+			"%4": "cat",
+		},
+	}
+	svc := app.NewService(app.Options{
+		RepoRoot:    root,
+		WorktreeDir: root + "/.worktrees",
+		Store:       store,
+		Tmux:        tmux,
+	})
+
+	if err := svc.ShutdownManagedPanes(context.Background(), ""); err != nil {
+		t.Fatalf("shutdown managed panes: %v", err)
+	}
+
+	killedSet := map[string]struct{}{}
+	for _, paneID := range tmux.killed {
+		killedSet[paneID] = struct{}{}
+	}
+	for _, paneID := range []string{"%2", "%3", "%4"} {
+		if _, ok := killedSet[paneID]; !ok {
+			t.Fatalf("expected pane %s killed, got %#v", paneID, tmux.killed)
+		}
+	}
+	if _, ok := killedSet["%1"]; ok {
+		t.Fatalf("control pane should not be killed, got %#v", tmux.killed)
 	}
 }
 

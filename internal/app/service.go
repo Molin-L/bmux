@@ -15,6 +15,7 @@ import (
 	"github.com/Molin-L/bmux/internal/agentexec"
 	"github.com/Molin-L/bmux/internal/beads"
 	"github.com/Molin-L/bmux/internal/errorsx"
+	"github.com/Molin-L/bmux/internal/layout"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
@@ -882,6 +883,101 @@ func (s *Service) PromotePendingRuns(ctx context.Context) (int, int, error) {
 
 func (s *Service) ReconcileRuns(ctx context.Context) error {
 	return s.executor.ReconcileRuns(ctx)
+}
+
+func (s *Service) ShutdownManagedPanes(ctx context.Context, planningPaneID string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+
+	runs, err := s.store.RunLockAll()
+	if err != nil {
+		return err
+	}
+
+	paneIDs := map[string]struct{}{}
+	var errs []string
+
+	for _, run := range runs {
+		if paneID := strings.TrimSpace(run.PaneID); paneID != "" {
+			paneIDs[paneID] = struct{}{}
+		}
+		if issueID := strings.TrimSpace(run.IssueID); issueID != "" {
+			if delErr := s.store.RunLockDelete(issueID); delErr != nil {
+				errs = append(errs, fmt.Sprintf("delete run lock %s: %v", issueID, delErr))
+			}
+		}
+	}
+
+	if paneID := strings.TrimSpace(planningPaneID); paneID != "" {
+		paneIDs[paneID] = struct{}{}
+	}
+
+	if s.tmux != nil {
+		controlPaneID := ""
+		legacyAuxTitles := map[string]struct{}{
+			layout.SpacerPaneTitle: {},
+			layout.IdlePaneTitle:   {},
+			"bmux-placeholder":     {},
+			"bmux-welcome":         {},
+			"Welcome":              {},
+		}
+		if panes, listErr := s.tmux.ListPanes(ctx, ""); listErr == nil {
+			for _, paneID := range panes {
+				candidate := strings.TrimSpace(paneID)
+				if candidate == "" {
+					continue
+				}
+				currentCmd, cmdErr := s.tmux.GetPaneCurrentCommand(ctx, candidate)
+				if cmdErr == nil && strings.EqualFold(strings.TrimSpace(currentCmd), "bmux") {
+					controlPaneID = candidate
+				}
+				title, titleErr := s.tmux.GetPaneTitle(ctx, candidate)
+				if titleErr != nil {
+					continue
+				}
+				if _, ok := legacyAuxTitles[strings.TrimSpace(title)]; ok {
+					paneIDs[candidate] = struct{}{}
+				}
+			}
+			for _, paneID := range panes {
+				candidate := strings.TrimSpace(paneID)
+				if candidate == "" || candidate == controlPaneID {
+					continue
+				}
+				currentCmd, cmdErr := s.tmux.GetPaneCurrentCommand(ctx, candidate)
+				if cmdErr == nil && strings.EqualFold(strings.TrimSpace(currentCmd), "cat") {
+					paneIDs[candidate] = struct{}{}
+				}
+			}
+		}
+		for paneID := range paneIDs {
+			if paneID == controlPaneID {
+				continue
+			}
+			if killErr := s.tmux.KillPane(ctx, paneID); killErr != nil {
+				lower := strings.ToLower(killErr.Error())
+				if strings.Contains(lower, "can't find pane") || strings.Contains(lower, "no such pane") || strings.Contains(lower, "unknown pane") {
+					continue
+				}
+				errs = append(errs, fmt.Sprintf("kill pane %s: %v", paneID, killErr))
+			}
+		}
+		if terminalW, terminalH, dimErr := s.tmux.GetTerminalDimensions(ctx); dimErr == nil && terminalW > 0 && terminalH > 0 {
+			if resizeErr := s.tmux.SetWindowSizeManual(ctx, "", terminalW, terminalH); resizeErr != nil {
+				errs = append(errs, fmt.Sprintf("restore window size: %v", resizeErr))
+			}
+		}
+	}
+
+	if apeErr := s.store.SetApeState(nil); apeErr != nil {
+		errs = append(errs, fmt.Sprintf("clear ape state: %v", apeErr))
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("shutdown managed panes: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func dedupeStrings(values []string) []string {

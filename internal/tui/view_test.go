@@ -150,7 +150,7 @@ func TestViewRendersMultiSelectBadgeAndHelpText(t *testing.T) {
 	}
 }
 
-func TestViewRendersStatusDetailsAsMultilineBlock(t *testing.T) {
+func TestViewRendersStatusDetailsAsCappedFooterBlock(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
 	m.status = "Merged bd-1 (task/bd-1 -> main)."
@@ -167,11 +167,16 @@ func TestViewRendersStatusDetailsAsMultilineBlock(t *testing.T) {
 	if !strings.Contains(out, "Step 2: repo merge: task/bd-1 -> main") {
 		t.Fatalf("missing detail lines:\n%s", out)
 	}
+	if strings.Contains(out, "Step 3: close issue: bd-1 -> bd") {
+		t.Fatalf("expected footer detail lines to be capped at 2:\n%s", out)
+	}
 }
 
-func TestViewRendersStatusBlockAtBottomAfterPromptPanel(t *testing.T) {
+func TestViewPinsStatusFooterAtBottomAfterPromptPanel(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
+	m.width = 120
+	m.height = 24
 	m.status = "Loaded 3 issues"
 	m.prompt = "Draft PR summary"
 
@@ -183,6 +188,12 @@ func TestViewRendersStatusBlockAtBottomAfterPromptPanel(t *testing.T) {
 	}
 	if statusIdx <= promptIdx {
 		t.Fatalf("expected status block below prompt block:\n%s", out)
+	}
+	if !strings.Contains(out, "\n\nStatus: Loaded 3 issues") {
+		t.Fatalf("expected one blank-line separation above status footer:\n%s", out)
+	}
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "Status: Loaded 3 issues") {
+		t.Fatalf("expected status footer to be bottom-most block:\n%s", out)
 	}
 }
 
@@ -230,6 +241,24 @@ func TestViewRendersClaimedHandoffConfirmInline(t *testing.T) {
 	}
 	if !strings.Contains(out, "- bd-1 (assignee: Alice)") || !strings.Contains(out, "- bd-2 (assignee: Bob)") {
 		t.Fatalf("missing claimed issue lines:\n%s", out)
+	}
+}
+
+func TestViewRendersQuitConfirmInline(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeQuitConfirm
+	m.quitConfirmPanelCount = 2
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "Quit bmux?") {
+		t.Fatalf("missing quit confirm header:\n%s", out)
+	}
+	if !strings.Contains(out, "2 active bmux panels detected.") {
+		t.Fatalf("missing panel count:\n%s", out)
+	}
+	if !strings.Contains(out, "Enter/q/Ctrl+C=confirm quit, Esc=cancel.") {
+		t.Fatalf("missing quit confirm actions:\n%s", out)
 	}
 }
 
@@ -293,6 +322,34 @@ func TestViewCompactModeHidesInlineMetadataAndShowsDetailsPanel(t *testing.T) {
 	}
 	if !strings.Contains(out, "blocked_by=bd-parent") {
 		t.Fatalf("details block should include blocked_by:\n%s", out)
+	}
+}
+
+func TestViewCompactModePinsSelectedTaskDetailsAboveStatusFooter(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.width = 63
+	m.height = 24
+	m.taskViewportWidth = 63
+	m.taskViewportHeight = 24
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-task", Title: "Task", Status: "open", Priority: 1, EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selected = rowIndexByIssueID(m.rows, "bd-task")
+	m.status = "Loaded 1 issues"
+
+	out := stripANSI(m.View())
+	listIdx := strings.Index(out, "Tasks (wrapped, no truncation)")
+	detailsIdx := strings.LastIndex(out, "Selected Task")
+	statusIdx := strings.LastIndex(out, "Status: Loaded 1 issues")
+	if listIdx < 0 || detailsIdx < 0 || statusIdx < 0 {
+		t.Fatalf("missing expected blocks:\n%s", out)
+	}
+	if detailsIdx <= listIdx {
+		t.Fatalf("selected task details should be below task list:\n%s", out)
+	}
+	if statusIdx <= detailsIdx {
+		t.Fatalf("status footer should remain below selected task details:\n%s", out)
 	}
 }
 
@@ -364,11 +421,13 @@ func TestViewUsesVerboseModeAtThresholdWidth(t *testing.T) {
 	}
 }
 
-func TestViewRendersStatusHeadersInExpectedOrder(t *testing.T) {
+func TestViewRendersStatusBucketsInFooterInExpectedOrder(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)
 	m.taskViewportWidth = 100
-	m.taskViewportHeight = 30
+	m.taskViewportHeight = 12
+	m.width = 100
+	m.height = 24
 	m.rows = buildIssueRows([]model.Issue{
 		{ID: "bd-open", Title: "Open", Status: "open", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
 		{ID: "bd-closed", Title: "Closed", Status: "closed", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
@@ -377,14 +436,16 @@ func TestViewRendersStatusHeadersInExpectedOrder(t *testing.T) {
 	m.selected = rowIndexByIssueID(m.rows, "bd-running")
 
 	out := stripANSI(m.View())
-	inProgIdx := strings.Index(out, "Status: in_progress")
-	openIdx := strings.Index(out, "Status: open")
-	closedIdx := strings.Index(out, "Status: closed")
-	if inProgIdx < 0 || openIdx < 0 || closedIdx < 0 {
-		t.Fatalf("missing status headers:\n%s", out)
+	bucketsLine := "Task Statuses: in_progress | open | closed"
+	bucketsIdx := strings.Index(out, bucketsLine)
+	if bucketsIdx < 0 {
+		t.Fatalf("missing footer task statuses line:\n%s", out)
 	}
-	if !(inProgIdx < openIdx && openIdx < closedIdx) {
-		t.Fatalf("unexpected status header order: in_progress=%d open=%d closed=%d\n%s", inProgIdx, openIdx, closedIdx, out)
+	if strings.Contains(out, "Status: in_progress") || strings.Contains(out, "Status: open") || strings.Contains(out, "Status: closed") {
+		t.Fatalf("expected status headers removed from task list:\n%s", out)
+	}
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), bucketsLine) {
+		t.Fatalf("expected footer task statuses to be bottom-most when no global status:\n%s", out)
 	}
 }
 

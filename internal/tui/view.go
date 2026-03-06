@@ -32,6 +32,11 @@ var (
 	metaSepStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
+const (
+	maxStatusFooterDetailLines = 2
+	statusFooterTopMarginLines = 1
+)
+
 var wrapTokenPattern = regexp.MustCompile(`\S+|\s+`)
 
 type tasksRender struct {
@@ -76,8 +81,9 @@ func (m Model) View() string {
 	}
 	tasks := clipViewport(render.content, offset, height)
 	body = append(body, taskListStyle.Render(tasks))
+	selectedTaskDetails := ""
 	if isCompactViewportWidth(width) && detailsHeight > 0 {
-		body = append(body, taskListStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight)))
+		selectedTaskDetails = taskListStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight))
 	}
 	if m.prompt != "" {
 		body = append(body, panelStyle.Render("PR Prompt:\n"+m.prompt))
@@ -95,6 +101,9 @@ func (m Model) View() string {
 	if m.mode == modeClaimedHandoffConfirm {
 		body = append(body, statusStyle.Render(m.renderClaimedHandoffConfirm()))
 	}
+	if m.mode == modeQuitConfirm {
+		body = append(body, statusStyle.Render(m.renderQuitConfirm()))
+	}
 
 	if m.busy {
 		body = append(body, busyStyle.Render("Working..."))
@@ -105,15 +114,77 @@ func (m Model) View() string {
 	if m.errorHint != "" {
 		body = append(body, errorHintStyle.Render("Hint: "+m.errorHint))
 	}
-	if m.status != "" {
-		statusLines := []string{"Status: " + m.status}
-		for _, line := range m.statusDetails {
-			statusLines = append(statusLines, "  "+line)
+	statusFooter := m.renderStatusFooter()
+	bottomLineCount := 0
+	if selectedTaskDetails != "" {
+		bottomLineCount += renderedLineCount(selectedTaskDetails)
+	}
+	if statusFooter != "" {
+		bottomLineCount += m.statusFooterLineCount()
+	}
+	if bottomLineCount > 0 && m.height > 0 {
+		currentLines := renderedLineCount(strings.Join(body, "\n"))
+		spacerLines := m.height - currentLines - bottomLineCount
+		for i := 0; i < spacerLines; i++ {
+			body = append(body, "")
 		}
-		body = append(body, statusStyle.Render(strings.Join(statusLines, "\n")))
+	}
+	if selectedTaskDetails != "" {
+		body = append(body, selectedTaskDetails)
+	}
+	if statusFooter != "" {
+		for i := 0; i < statusFooterTopMarginLines; i++ {
+			body = append(body, "")
+		}
+		body = append(body, statusFooter)
 	}
 
 	return strings.Join(body, "\n")
+}
+
+func (m Model) renderStatusFooter() string {
+	lines := m.statusFooterLines()
+	if len(lines) == 0 {
+		return ""
+	}
+	return statusStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) statusFooterLineCount() int {
+	lines := m.statusFooterLines()
+	if len(lines) == 0 {
+		return 0
+	}
+	return statusFooterTopMarginLines + len(lines)
+}
+
+func (m Model) statusFooterLines() []string {
+	lines := []string{}
+	if m.status != "" {
+		lines = append(lines, "Status: "+m.status)
+		detailCount := len(m.statusDetails)
+		if detailCount > maxStatusFooterDetailLines {
+			detailCount = maxStatusFooterDetailLines
+		}
+		for i := 0; i < detailCount; i++ {
+			lines = append(lines, "  "+m.statusDetails[i])
+		}
+	}
+	buckets := m.statusBucketsInOrder()
+	if len(buckets) > 0 {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "Task Statuses: "+strings.Join(buckets, " | "))
+	}
+	return lines
+}
+
+func renderedLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	return strings.Count(content, "\n") + 1
 }
 
 func (m Model) renderMergeConflictConfirm() string {
@@ -138,6 +209,22 @@ func (m Model) renderClaimedHandoffConfirm() string {
 		lines = append(lines, fmt.Sprintf("- %s (assignee: %s)", claimed.issueID, claimed.assignee))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderQuitConfirm() string {
+	panels := m.quitConfirmPanelCount
+	if panels < 0 {
+		panels = 0
+	}
+	label := "panels"
+	if panels == 1 {
+		label = "panel"
+	}
+	return fmt.Sprintf(
+		"Quit bmux?\n%d active bmux %s detected.\nEnter/q/Ctrl+C=confirm quit, Esc=cancel.",
+		panels,
+		label,
+	)
 }
 
 func (m Model) renderTasksContent(width int) tasksRender {
@@ -167,8 +254,7 @@ func (m Model) renderTasksContent(width int) tasksRender {
 	for i, row := range m.rows {
 		switch row.kind {
 		case issueRowStatusHeader:
-			lines = append(lines, statusBucketStyle.Render("Status: "+row.statusLabel))
-			lines = append(lines, "")
+			continue
 		case issueRowEpicHeader:
 			title := row.epicTitle
 			if strings.TrimSpace(row.epicID) != "" {
@@ -236,6 +322,26 @@ func (m Model) renderTasksContent(width int) tasksRender {
 		rowEnds:   rowEnds,
 		lineCount: len(strings.Split(content, "\n")),
 	}
+}
+
+func (m Model) statusBucketsInOrder() []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, row := range m.rows {
+		if row.kind != issueRowStatusHeader {
+			continue
+		}
+		label := strings.TrimSpace(row.statusLabel)
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 func (m Model) issueRuntimeInfo(issueID string) taskRuntimeInfo {

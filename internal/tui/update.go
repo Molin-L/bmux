@@ -313,10 +313,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeQuitConfirm {
+			switch msg.String() {
+			case "esc":
+				m.mode = modeMain
+				m.quitConfirmPanelCount = 0
+				return m, nil
+			case "enter", "q", "ctrl+c":
+				m.shutdownManagedPanesOnQuit()
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
+			if m.mode != modeMain {
+				return m, tea.Quit
+			}
+			panelCount := m.protectedPanelCount()
+			if panelCount == 0 {
+				m.shutdownManagedPanesOnQuit()
+				return m, tea.Quit
+			}
+			m.mode = modeQuitConfirm
+			m.quitConfirmPanelCount = panelCount
+			return m, nil
+		}
 
 		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
 		case "up", "k":
 			next := nextSelectableRow(m.rows, m.selected, -1)
 			if next >= 0 {
@@ -719,6 +743,25 @@ func isCompactViewportWidth(width int) bool {
 	return width < compactViewportThreshold
 }
 
+func (m Model) protectedPanelCount() int {
+	count := 0
+	summary := safeRunSummary(m.svc, nil)
+	if summary.Running > 0 {
+		count += summary.Running
+	}
+	if strings.TrimSpace(m.pendingPaneID) != "" {
+		count++
+	}
+	return count
+}
+
+func (m Model) shutdownManagedPanesOnQuit() {
+	if m.svc == nil {
+		return
+	}
+	_ = m.svc.ShutdownManagedPanes(context.Background(), m.pendingPaneID)
+}
+
 func compactDetailsHeight(taskAreaHeight int) int {
 	height := taskAreaHeight / 4
 	if height < compactDetailsMinLines {
@@ -752,7 +795,7 @@ func (m *Model) taskViewportLayout() (int, int, int) {
 			reserved++
 		}
 		if m.status != "" {
-			reserved++
+			reserved += m.statusFooterLineCount()
 		}
 		if m.pendingPaneID != "" {
 			reserved++

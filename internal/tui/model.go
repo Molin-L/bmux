@@ -76,6 +76,7 @@ const (
 	modePlanConfirm
 	modeMergeConflictConfirm
 	modeClaimedHandoffConfirm
+	modeQuitConfirm
 )
 
 const (
@@ -138,6 +139,7 @@ type Model struct {
 	preserveStatusNextLoad bool
 	pendingMergeConflict   *pendingMergeConflict
 	pendingClaimedHandoff  *pendingClaimedHandoff
+	quitConfirmPanelCount  int
 }
 
 func NewModel(svc *app.Service) Model {
