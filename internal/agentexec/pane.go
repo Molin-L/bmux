@@ -29,7 +29,7 @@ func (e *Executor) createPane(ctx context.Context, cwd string) (string, error) {
 			p := strings.TrimSpace(pane)
 			if p != "" && p != currentPane {
 				title, titleErr := e.tmux.GetPaneTitle(ctx, p)
-				if titleErr == nil && title == layout.SpacerPaneTitle {
+				if titleErr == nil && (title == layout.SpacerPaneTitle || title == layout.IdlePaneTitle) {
 					continue
 				}
 				target = p
@@ -40,7 +40,10 @@ func (e *Executor) createPane(ctx context.Context, cwd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_ = e.recalculateSidebarLayout(ctx, currentPane, true)
+	if err := e.recalculateSidebarLayout(ctx, "", true); err != nil {
+		_ = e.tmux.KillPane(ctx, paneID)
+		return "", err
+	}
 	return paneID, nil
 }
 
@@ -66,25 +69,30 @@ func (e *Executor) resolveControlPaneID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(panes) == 0 {
+	ordered := make([]string, 0, len(panes))
+	for _, paneID := range panes {
+		if candidate := strings.TrimSpace(paneID); candidate != "" {
+			ordered = append(ordered, candidate)
+		}
+	}
+	if len(ordered) == 0 {
 		return "", nil
 	}
 
-	currentPane, currentErr := e.tmux.CurrentPaneID(ctx)
-	if currentErr == nil {
-		currentPane = strings.TrimSpace(currentPane)
-		for _, paneID := range panes {
-			if strings.TrimSpace(paneID) == currentPane {
-				return currentPane, nil
-			}
+	isAuxiliaryPane := func(paneID string) bool {
+		title, titleErr := e.tmux.GetPaneTitle(ctx, paneID)
+		if titleErr != nil {
+			return false
+		}
+		switch strings.TrimSpace(title) {
+		case layout.SpacerPaneTitle, layout.IdlePaneTitle:
+			return true
+		default:
+			return false
 		}
 	}
 
-	for _, paneID := range panes {
-		candidate := strings.TrimSpace(paneID)
-		if candidate == "" {
-			continue
-		}
+	for _, candidate := range ordered {
 		cmd, cmdErr := e.tmux.GetPaneCurrentCommand(ctx, candidate)
 		if cmdErr != nil {
 			continue
@@ -94,5 +102,26 @@ func (e *Executor) resolveControlPaneID(ctx context.Context) (string, error) {
 		}
 	}
 
-	return strings.TrimSpace(panes[0]), nil
+	currentPane, currentErr := e.tmux.CurrentPaneID(ctx)
+	if currentErr == nil {
+		currentPane = strings.TrimSpace(currentPane)
+		knownCurrent := false
+		for _, candidate := range ordered {
+			if candidate == currentPane {
+				knownCurrent = true
+				break
+			}
+		}
+		if knownCurrent && !isAuxiliaryPane(currentPane) {
+			return currentPane, nil
+		}
+	}
+
+	for _, candidate := range ordered {
+		if !isAuxiliaryPane(candidate) {
+			return candidate, nil
+		}
+	}
+
+	return ordered[0], nil
 }

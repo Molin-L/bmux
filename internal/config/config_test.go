@@ -106,17 +106,17 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Tmux.Layout != "sidebar" {
 		t.Fatalf("default tmux.layout = %q, want %q", cfg.Tmux.Layout, "sidebar")
 	}
-	if cfg.Tmux.ControlPaneWidth != 40 {
-		t.Fatalf("default tmux.control_pane_width = %d, want %d", cfg.Tmux.ControlPaneWidth, 40)
+	if cfg.Tmux.ControlPaneWidth != 55 {
+		t.Fatalf("default tmux.control_pane_width = %d, want %d", cfg.Tmux.ControlPaneWidth, 55)
 	}
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("default tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")
 	}
-	if cfg.Tmux.MinPaneWidth != 50 {
-		t.Fatalf("default tmux.min_pane_width = %d, want %d", cfg.Tmux.MinPaneWidth, 50)
+	if cfg.Tmux.MinPaneWidth != 60 {
+		t.Fatalf("default tmux.min_pane_width = %d, want %d", cfg.Tmux.MinPaneWidth, 60)
 	}
-	if cfg.Tmux.MaxPaneWidth != 80 {
-		t.Fatalf("default tmux.max_pane_width = %d, want %d", cfg.Tmux.MaxPaneWidth, 80)
+	if cfg.Tmux.MaxPaneWidth != 100 {
+		t.Fatalf("default tmux.max_pane_width = %d, want %d", cfg.Tmux.MaxPaneWidth, 100)
 	}
 	if cfg.Execution.ApeMaxParallel != 2 {
 		t.Fatalf("default execution.ape_max_parallel = %d, want %d", cfg.Execution.ApeMaxParallel, 2)
@@ -146,8 +146,8 @@ func TestLoadInvalidSplitDirectionFallsBack(t *testing.T) {
 	if cfg.Tmux.Layout != "sidebar" {
 		t.Fatalf("tmux.layout = %q, want %q", cfg.Tmux.Layout, "sidebar")
 	}
-	if cfg.Tmux.ControlPaneWidth != 40 {
-		t.Fatalf("tmux.control_pane_width = %d, want %d", cfg.Tmux.ControlPaneWidth, 40)
+	if cfg.Tmux.ControlPaneWidth != 55 {
+		t.Fatalf("tmux.control_pane_width = %d, want %d", cfg.Tmux.ControlPaneWidth, 55)
 	}
 	if cfg.Tmux.SessionPrefix != "bmux-" {
 		t.Fatalf("tmux.session_prefix = %q, want %q", cfg.Tmux.SessionPrefix, "bmux-")

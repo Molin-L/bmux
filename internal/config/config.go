@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	DefaultBranchPrefix = "task/"
-	minPaneWidthMin     = 40
-	minPaneWidthMax     = 300
+	DefaultBranchPrefix     = "task/"
+	minPaneWidthMin         = 40
+	minPaneWidthMax         = 300
+	defaultControlPaneWidth = 55
+	defaultMinPaneWidth     = 60
+	defaultMaxPaneWidth     = 100
 )
 
 type Config struct {
@@ -52,13 +55,13 @@ type PlanningConfig struct {
 
 type ExecutionConfig struct {
 	ApeMaxParallel int                    `yaml:"ape_max_parallel"`
-	Prompts          ExecutionPromptsConfig `yaml:"prompts"`
+	Prompts        ExecutionPromptsConfig `yaml:"prompts"`
 }
 
 type ExecutionPromptsConfig struct {
 	Plan    string `yaml:"plan"`
 	SelfRun string `yaml:"self_run"`
-	Ape   string `yaml:"ape"`
+	Ape     string `yaml:"ape"`
 }
 
 func defaultConfig(projectRoot string) Config {
@@ -71,10 +74,10 @@ func defaultConfig(projectRoot string) Config {
 			SplitDirection:   "right",
 			AutoAttach:       true,
 			Layout:           "sidebar",
-			ControlPaneWidth: 40,
+			ControlPaneWidth: defaultControlPaneWidth,
 			SessionPrefix:    "bmux-",
-			MinPaneWidth:     50,
-			MaxPaneWidth:     80,
+			MinPaneWidth:     defaultMinPaneWidth,
+			MaxPaneWidth:     defaultMaxPaneWidth,
 		},
 		Execution: ExecutionConfig{
 			ApeMaxParallel: 2,
@@ -116,7 +119,7 @@ func Load(projectRoot, homeDir string) (Config, error) {
 		cfg.Tmux.Layout = "sidebar"
 	}
 	if cfg.Tmux.ControlPaneWidth <= 0 {
-		cfg.Tmux.ControlPaneWidth = 40
+		cfg.Tmux.ControlPaneWidth = defaultControlPaneWidth
 	}
 	if strings.TrimSpace(cfg.Tmux.SessionPrefix) == "" {
 		cfg.Tmux.SessionPrefix = "bmux-"

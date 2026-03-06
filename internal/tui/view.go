@@ -79,23 +79,6 @@ func (m Model) View() string {
 	if isCompactViewportWidth(width) && detailsHeight > 0 {
 		body = append(body, taskListStyle.Render(m.renderSelectedTaskDetails(width, detailsHeight)))
 	}
-
-	if m.busy {
-		body = append(body, busyStyle.Render("Working..."))
-	}
-	if m.status != "" {
-		statusLines := []string{"Status: " + m.status}
-		for _, line := range m.statusDetails {
-			statusLines = append(statusLines, "  "+line)
-		}
-		body = append(body, statusStyle.Render(strings.Join(statusLines, "\n")))
-	}
-	if m.pendingPaneID != "" {
-		body = append(body, statusStyle.Render("Planning Pane: "+m.pendingPaneID))
-	}
-	if m.errorHint != "" {
-		body = append(body, errorHintStyle.Render("Hint: "+m.errorHint))
-	}
 	if m.prompt != "" {
 		body = append(body, panelStyle.Render("PR Prompt:\n"+m.prompt))
 	}
@@ -111,6 +94,23 @@ func (m Model) View() string {
 	}
 	if m.mode == modeClaimedHandoffConfirm {
 		body = append(body, statusStyle.Render(m.renderClaimedHandoffConfirm()))
+	}
+
+	if m.busy {
+		body = append(body, busyStyle.Render("Working..."))
+	}
+	if m.pendingPaneID != "" {
+		body = append(body, statusStyle.Render("Planning Pane: "+m.pendingPaneID))
+	}
+	if m.errorHint != "" {
+		body = append(body, errorHintStyle.Render("Hint: "+m.errorHint))
+	}
+	if m.status != "" {
+		statusLines := []string{"Status: " + m.status}
+		for _, line := range m.statusDetails {
+			statusLines = append(statusLines, "  "+line)
+		}
+		body = append(body, statusStyle.Render(strings.Join(statusLines, "\n")))
 	}
 
 	return strings.Join(body, "\n")

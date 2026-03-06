@@ -30,6 +30,7 @@ type TmuxClient interface {
 	GetPaneCurrentCommand(ctx context.Context, paneID string) (string, error)
 	GetWindowDimensions(ctx context.Context) (int, int, error)
 	GetTerminalDimensions(ctx context.Context) (int, int, error)
+	SetPaneBorderStatus(ctx context.Context, target, status string) error
 	SetWindowSizeManual(ctx context.Context, target string, width, height int) error
 	SetPaneTitle(ctx context.Context, paneID, title string) error
 	GetPaneTitle(ctx context.Context, paneID string) (string, error)
@@ -58,10 +59,10 @@ type Options struct {
 	ControlWidth           int
 	MinPaneWidth           int
 	MaxPaneWidth           int
-	ApeMaxParallel       int
+	ApeMaxParallel         int
 	ExecutionPlanPrompt    string
 	ExecutionSelfRunPrompt string
-	ExecutionApePrompt   string
+	ExecutionApePrompt     string
 	OpenTask               OpenTaskFunc
 	ReadyIssues            ReadyIssuesFunc
 }

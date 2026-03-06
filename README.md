@@ -64,9 +64,9 @@ agents:
 tmux:
   auto_attach: true
   layout: sidebar
-  control_pane_width: 40
-  min_pane_width: 50
-  max_pane_width: 80
+  control_pane_width: 55
+  min_pane_width: 60
+  max_pane_width: 100
   session_prefix: bmux-
   split_direction: right
 planning:
@@ -82,9 +82,9 @@ Defaults:
 - `tmux.split_direction`: `right` (`right` or `below`, used when `tmux.layout=single`; sidebar layout is layout-manager controlled)
 - `tmux.auto_attach`: `true` (auto-create/attach project tmux session when launched outside tmux)
 - `tmux.layout`: `sidebar` (`sidebar` or `single`)
-- `tmux.control_pane_width`: `40`
-- `tmux.min_pane_width`: `50` (clamped to `40..300`)
-- `tmux.max_pane_width`: `80` (clamped to `40..300`, normalized so `max >= min`)
+- `tmux.control_pane_width`: `55`
+- `tmux.min_pane_width`: `60` (clamped to `40..300`)
+- `tmux.max_pane_width`: `100` (clamped to `40..300`, normalized so `max >= min`)
 - `tmux.session_prefix`: `bmux-`
 - `agents.claude.command`: empty by default; if empty, `bmux` falls back to `claude` from PATH
 - `agents.codex.command`: empty by default; if empty, `bmux` falls back to `codex` from PATH

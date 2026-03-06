@@ -57,6 +57,7 @@ func (f *fakeBeads) Claim(_ context.Context, issueID string) error {
 
 type fakeTmux struct {
 	paneID          string
+	currentPaneID   string
 	captured        string
 	splitErr        error
 	sendErr         error
@@ -80,7 +81,9 @@ type fakeTmux struct {
 	windowWidth     int
 	windowHeight    int
 	layouts         []string
+	layoutErr       error
 	sidebarSetCalls int
+	borderStatuses  []string
 	windowSizeCalls int
 }
 
@@ -122,7 +125,12 @@ func (t *fakeTmux) CapturePane(context.Context, string, int) (string, error) {
 	return t.captured, nil
 }
 
-func (t *fakeTmux) CurrentPaneID(context.Context) (string, error) { return "%1", nil }
+func (t *fakeTmux) CurrentPaneID(context.Context) (string, error) {
+	if strings.TrimSpace(t.currentPaneID) != "" {
+		return t.currentPaneID, nil
+	}
+	return "%1", nil
+}
 func (t *fakeTmux) ListPanes(context.Context, string) ([]string, error) {
 	if len(t.panes) > 0 {
 		out := make([]string, len(t.panes))
@@ -135,12 +143,19 @@ func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) erro
 	t.sidebarSetCalls++
 	return nil
 }
+func (t *fakeTmux) SetPaneBorderStatus(_ context.Context, _ string, status string) error {
+	t.borderStatuses = append(t.borderStatuses, strings.TrimSpace(status))
+	return nil
+}
 func (t *fakeTmux) SelectLayoutMainVertical(context.Context, string) error {
 	t.layouts = append(t.layouts, "main-vertical")
 	return nil
 }
 func (t *fakeTmux) SelectLayout(_ context.Context, _ string, layout string) error {
 	t.layouts = append(t.layouts, layout)
+	if t.layoutErr != nil {
+		return t.layoutErr
+	}
 	return nil
 }
 func (t *fakeTmux) SetBuffer(_ context.Context, _ string, content string) error {
@@ -211,6 +226,24 @@ func (t *fakeTmux) GetPaneTitle(_ context.Context, paneID string) (string, error
 }
 func (t *fakeTmux) KillPane(_ context.Context, paneID string) error {
 	t.killed = append(t.killed, paneID)
+	trimmed := strings.TrimSpace(paneID)
+	if trimmed == "" {
+		return nil
+	}
+	next := make([]string, 0, len(t.panes))
+	for _, pane := range t.panes {
+		if strings.TrimSpace(pane) != trimmed {
+			next = append(next, pane)
+		}
+	}
+	t.panes = next
+	delete(t.titles, trimmed)
+	if strings.TrimSpace(t.currentPaneID) == trimmed {
+		t.currentPaneID = ""
+	}
+	if t.currentByPane != nil {
+		delete(t.currentByPane, trimmed)
+	}
 	return nil
 }
 

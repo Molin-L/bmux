@@ -334,6 +334,5 @@ func (e *Executor) ReconcileRuns(ctx context.Context) error {
 	if _, _, err := e.PromotePendingRuns(ctx); err != nil {
 		return err
 	}
-	_ = e.recalculateSidebarLayout(ctx, "", false)
-	return nil
+	return e.recalculateSidebarLayout(ctx, "", false)
 }

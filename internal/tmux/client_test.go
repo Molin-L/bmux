@@ -249,6 +249,42 @@ func TestSetWindowSizeManual(t *testing.T) {
 	}
 }
 
+func TestSetPaneBorderStatus(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	c := &Client{runner: f}
+	if err := c.SetPaneBorderStatus(context.Background(), "sess", "off"); err != nil {
+		t.Fatalf("set pane border status: %v", err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("calls = %d", len(f.calls))
+	}
+	want := []string{"set-window-option", "-t", "sess", "pane-border-status", "off"}
+	for i := range want {
+		if f.calls[0].args[i] != want[i] {
+			t.Fatalf("arg[%d]=%q want=%q", i, f.calls[0].args[i], want[i])
+		}
+	}
+}
+
+func TestSetWindowOptionsForSidebarUsesHiddenPaneBorderStatus(t *testing.T) {
+	t.Parallel()
+	f := &fakeRunner{}
+	c := &Client{runner: f}
+	if err := c.SetWindowOptionsForSidebar(context.Background(), "sess", 48); err != nil {
+		t.Fatalf("set window options: %v", err)
+	}
+	if len(f.calls) != 3 {
+		t.Fatalf("calls = %d", len(f.calls))
+	}
+	want0 := []string{"set-window-option", "-t", "sess", "pane-border-status", "off"}
+	for i := range want0 {
+		if f.calls[0].args[i] != want0[i] {
+			t.Fatalf("call0 arg[%d]=%q want=%q", i, f.calls[0].args[i], want0[i])
+		}
+	}
+}
+
 func TestPaneTitleAndLayoutHelpers(t *testing.T) {
 	t.Parallel()
 	f := &fakeRunner{outputs: []string{"", "bmux-spacer\n"}}

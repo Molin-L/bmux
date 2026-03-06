@@ -2,6 +2,8 @@ package layout
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -11,9 +13,9 @@ type TmuxClient interface {
 	GetPaneTitle(ctx context.Context, paneID string) (string, error)
 	GetTerminalDimensions(ctx context.Context) (int, int, error)
 	GetWindowDimensions(ctx context.Context) (int, int, error)
+	SetPaneBorderStatus(ctx context.Context, target, status string) error
 	SetWindowSizeManual(ctx context.Context, target string, width, height int) error
 	SelectLayout(ctx context.Context, target, layout string) error
-	SetWindowOptionsForSidebar(ctx context.Context, target string, controlWidth int) error
 	SplitPaneOnTargetWithCommand(ctx context.Context, direction, cwd, target, command string) (string, error)
 	SetPaneTitle(ctx context.Context, paneID, title string) error
 	KillPane(ctx context.Context, paneID string) error
@@ -59,22 +61,41 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 	if !containsPane(allPanes, controlPaneID) {
 		return nil
 	}
+	if err := m.tmux.SetPaneBorderStatus(ctx, controlPaneID, "off"); err != nil {
+		return fmt.Errorf("enforce sidebar layout: set pane border status: %w", err)
+	}
 
 	existingSpacerID := ""
+	existingIdleID := ""
 	for _, paneID := range allPanes {
 		title, titleErr := m.tmux.GetPaneTitle(ctx, paneID)
-		if titleErr == nil && title == SpacerPaneTitle {
-			existingSpacerID = paneID
-			break
+		if titleErr != nil {
+			continue
+		}
+		switch strings.TrimSpace(title) {
+		case SpacerPaneTitle:
+			if existingSpacerID == "" {
+				existingSpacerID = paneID
+			}
+		case IdlePaneTitle:
+			if existingIdleID == "" {
+				existingIdleID = paneID
+			}
 		}
 	}
 
 	realContentPanes := make([]string, 0, len(allPanes))
 	for _, paneID := range allPanes {
-		if paneID == controlPaneID || paneID == existingSpacerID {
+		if paneID == controlPaneID || paneID == existingSpacerID || paneID == existingIdleID {
 			continue
 		}
 		realContentPanes = append(realContentPanes, paneID)
+	}
+	idlePaneRemoved := false
+	if strings.TrimSpace(existingIdleID) != "" {
+		_ = m.tmux.KillPane(ctx, existingIdleID)
+		existingIdleID = ""
+		idlePaneRemoved = true
 	}
 
 	terminalW, terminalH, err := m.tmux.GetTerminalDimensions(ctx)
@@ -86,21 +107,14 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 		terminalW, terminalH = windowW, windowH
 	}
 
-	if !force && m.last.valid &&
-		m.last.terminalW == terminalW &&
-		m.last.terminalH == terminalH &&
-		m.last.contentPane == len(realContentPanes) &&
-		m.last.minPaneW == m.cfg.MinPaneWidth &&
-		m.last.maxPaneW == m.cfg.MaxPaneWidth {
-		return nil
-	}
-
 	baseLayout := CalculateOptimalLayout(len(realContentPanes), terminalW, terminalH, m.cfg)
 	needsSpacer := NeedsSpacerPane(len(realContentPanes), baseLayout, m.cfg)
+	spacerChanged := false
 
 	if existingSpacerID != "" && !needsSpacer {
 		_ = m.tmux.KillPane(ctx, existingSpacerID)
 		existingSpacerID = ""
+		spacerChanged = true
 	}
 
 	spacerID := ""
@@ -113,6 +127,7 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 			if splitErr == nil && strings.TrimSpace(newPaneID) != "" {
 				spacerID = strings.TrimSpace(newPaneID)
 				_ = m.tmux.SetPaneTitle(ctx, spacerID, SpacerPaneTitle)
+				spacerChanged = true
 			}
 		}
 	}
@@ -124,18 +139,32 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 	}
 
 	finalLayout := baseLayout
-	if spacerID != "" {
+	if len(finalContentPanes) != len(realContentPanes) {
 		finalLayout = CalculateOptimalLayout(len(finalContentPanes), terminalW, terminalH, m.cfg)
 	}
 
-	if currentW, currentH, wErr := m.tmux.GetWindowDimensions(ctx); wErr == nil {
-		if currentW != finalLayout.WindowWidth || currentH != terminalH {
-			_ = m.tmux.SetWindowSizeManual(ctx, "", finalLayout.WindowWidth, terminalH)
-		}
+	currentW, currentH, windowErr := m.tmux.GetWindowDimensions(ctx)
+	targetWindowWidth := finalLayout.WindowWidth
+	if len(finalContentPanes) == 0 {
+		targetWindowWidth = m.cfg.SidebarWidth
+	}
+	windowSizeMismatch := windowErr == nil && currentW > 0 && currentH > 0 && (currentW != targetWindowWidth || currentH != terminalH)
+	if !force && m.last.valid &&
+		m.last.terminalW == terminalW &&
+		m.last.terminalH == terminalH &&
+		m.last.contentPane == len(realContentPanes) &&
+		m.last.minPaneW == m.cfg.MinPaneWidth &&
+		m.last.maxPaneW == m.cfg.MaxPaneWidth &&
+		!idlePaneRemoved &&
+		!spacerChanged &&
+		!windowSizeMismatch {
+		return nil
+	}
+	if windowSizeMismatch {
+		_ = m.tmux.SetWindowSizeManual(ctx, "", targetWindowWidth, terminalH)
 	}
 
 	if len(finalContentPanes) == 0 {
-		_ = m.applyMainVerticalFallback(ctx)
 		m.updateCache(terminalW, terminalH, len(realContentPanes))
 		return nil
 	}
@@ -151,23 +180,14 @@ func (m *Manager) Recalculate(ctx context.Context, controlPaneID string, force b
 		func(paneID string) bool { return paneID == spacerID },
 	)
 	if strings.TrimSpace(layoutString) == "" {
-		_ = m.applyMainVerticalFallback(ctx)
-		m.updateCache(terminalW, terminalH, len(realContentPanes))
-		return nil
+		return errors.New("enforce sidebar layout: generated layout is empty")
 	}
 	if err := m.tmux.SelectLayout(ctx, "", layoutString); err != nil {
-		_ = m.applyMainVerticalFallback(ctx)
+		return fmt.Errorf("enforce sidebar layout: apply layout: %w", err)
 	}
 
 	m.updateCache(terminalW, terminalH, len(realContentPanes))
 	return nil
-}
-
-func (m *Manager) applyMainVerticalFallback(ctx context.Context) error {
-	if err := m.tmux.SetWindowOptionsForSidebar(ctx, "", m.cfg.SidebarWidth); err != nil {
-		return err
-	}
-	return m.tmux.SelectLayout(ctx, "", "main-vertical")
 }
 
 func (m *Manager) updateCache(terminalW, terminalH, contentPane int) {

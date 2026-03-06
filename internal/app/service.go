@@ -72,6 +72,7 @@ type TmuxClient interface {
 	GetPaneCurrentCommand(ctx context.Context, paneID string) (string, error)
 	GetWindowDimensions(ctx context.Context) (int, int, error)
 	GetTerminalDimensions(ctx context.Context) (int, int, error)
+	SetPaneBorderStatus(ctx context.Context, target, status string) error
 	SetWindowSizeManual(ctx context.Context, target string, width, height int) error
 	SetPaneTitle(ctx context.Context, paneID, title string) error
 	GetPaneTitle(ctx context.Context, paneID string) (string, error)

@@ -8,3 +8,7 @@
 .worktrees/
 bmux
 bin/
+
+# local/system artifacts
+.DS_Store
+release/

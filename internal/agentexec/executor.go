@@ -22,14 +22,14 @@ type Executor struct {
 	maxPaneWidth     int
 	agentCommands    map[string]string
 	promptTemplate   string
-	apeMaxParallel int
+	apeMaxParallel   int
 	executionPrompts executionPrompts
 }
 
 type executionPrompts struct {
 	plan    string
 	selfRun string
-	ape   string
+	ape     string
 }
 
 func New(opts Options) *Executor {
@@ -54,12 +54,12 @@ func New(opts Options) *Executor {
 			"claude": strings.TrimSpace(opts.ClaudeCommand),
 			"codex":  strings.TrimSpace(opts.CodexCommand),
 		},
-		promptTemplate:   planPromptTemplate(opts.PromptTemplate),
+		promptTemplate: planPromptTemplate(opts.PromptTemplate),
 		apeMaxParallel: normalizeApeMaxParallel(opts.ApeMaxParallel),
 		executionPrompts: executionPrompts{
 			plan:    planPrompt,
 			selfRun: selfRunPrompt,
-			ape:   apePrompt,
+			ape:     apePrompt,
 		},
 	}
 
@@ -91,7 +91,7 @@ func normalizeTmuxLayout(v string) string {
 
 func normalizeControlWidth(v int) int {
 	if v <= 0 {
-		return 40
+		return 55
 	}
 	return v
 }
@@ -110,8 +110,8 @@ func normalizePaneWidth(v, fallback int) int {
 }
 
 func normalizePaneWidths(minPaneWidth, maxPaneWidth int) (int, int) {
-	minPaneWidth = normalizePaneWidth(minPaneWidth, 50)
-	maxPaneWidth = normalizePaneWidth(maxPaneWidth, 80)
+	minPaneWidth = normalizePaneWidth(minPaneWidth, 60)
+	maxPaneWidth = normalizePaneWidth(maxPaneWidth, 100)
 	if minPaneWidth > maxPaneWidth {
 		maxPaneWidth = minPaneWidth
 	}

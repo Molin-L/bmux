@@ -17,3 +17,5 @@ type Layout struct {
 }
 
 const SpacerPaneTitle = "bmux-spacer"
+
+const IdlePaneTitle = "bmux-idle"

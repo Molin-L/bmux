@@ -120,12 +120,12 @@ func (c *Client) SetWindowOptionsForSidebar(ctx context.Context, target string, 
 	if controlWidth <= 0 {
 		controlWidth = 40
 	}
+	if err := c.SetPaneBorderStatus(ctx, target, "off"); err != nil {
+		return err
+	}
 	base := []string{}
 	if strings.TrimSpace(target) != "" {
 		base = []string{"-t", target}
-	}
-	if _, err := c.runner.Run(ctx, "", "tmux", append([]string{"set-option"}, append(base, "pane-border-status", "top")...)...); err != nil {
-		return err
 	}
 	if _, err := c.runner.Run(ctx, "", "tmux", append([]string{"set-window-option"}, append(base, "main-pane-width", strconv.Itoa(controlWidth))...)...); err != nil {
 		return err
@@ -218,6 +218,20 @@ func (c *Client) GetWindowDimensions(ctx context.Context) (int, int, error) {
 
 func (c *Client) GetTerminalDimensions(ctx context.Context) (int, int, error) {
 	return c.parseDimensions(ctx, "#{client_width} #{client_height}")
+}
+
+func (c *Client) SetPaneBorderStatus(ctx context.Context, target, status string) error {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "off"
+	}
+	args := []string{"set-window-option"}
+	if strings.TrimSpace(target) != "" {
+		args = append(args, "-t", target)
+	}
+	args = append(args, "pane-border-status", status)
+	_, err := c.runner.Run(ctx, "", "tmux", args...)
+	return err
 }
 
 func (c *Client) parseDimensions(ctx context.Context, format string) (int, int, error) {

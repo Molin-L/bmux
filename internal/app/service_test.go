@@ -235,6 +235,7 @@ type fakeTmux struct {
 	windowHeight    int
 	layouts         []string
 	sidebarSetCalls int
+	borderStatuses  []string
 	windowSizeCalls int
 }
 
@@ -290,6 +291,10 @@ func (t *fakeTmux) ListPanes(context.Context, string) ([]string, error) {
 }
 func (t *fakeTmux) SetWindowOptionsForSidebar(context.Context, string, int) error {
 	t.sidebarSetCalls++
+	return nil
+}
+func (t *fakeTmux) SetPaneBorderStatus(_ context.Context, _ string, status string) error {
+	t.borderStatuses = append(t.borderStatuses, strings.TrimSpace(status))
 	return nil
 }
 func (t *fakeTmux) SelectLayoutMainVertical(context.Context, string) error {

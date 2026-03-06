@@ -169,6 +169,23 @@ func TestViewRendersStatusDetailsAsMultilineBlock(t *testing.T) {
 	}
 }
 
+func TestViewRendersStatusBlockAtBottomAfterPromptPanel(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.status = "Loaded 3 issues"
+	m.prompt = "Draft PR summary"
+
+	out := stripANSI(m.View())
+	statusIdx := strings.LastIndex(out, "Status: Loaded 3 issues")
+	promptIdx := strings.LastIndex(out, "PR Prompt:")
+	if statusIdx < 0 || promptIdx < 0 {
+		t.Fatalf("missing status or prompt block:\n%s", out)
+	}
+	if statusIdx <= promptIdx {
+		t.Fatalf("expected status block below prompt block:\n%s", out)
+	}
+}
+
 func TestViewRendersMergeConflictConfirmInline(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)

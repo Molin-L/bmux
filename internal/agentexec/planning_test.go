@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Molin-L/bmux/internal/layout"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
@@ -71,13 +72,13 @@ func TestStartPlanningPane(t *testing.T) {
 	}
 }
 
-func TestStartPlanningPaneSidebarTargetsLastNonSpacerPane(t *testing.T) {
+func TestStartPlanningPaneSidebarTargetsLastNonAuxPane(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	tmux := &fakeTmux{
 		paneID: "%7",
-		panes:  []string{"%1", "%2", "%9"},
-		titles: map[string]string{"%9": "bmux-spacer"},
+		panes:  []string{"%1", "%2", "%9", "%8"},
+		titles: map[string]string{"%9": layout.SpacerPaneTitle, "%8": layout.IdlePaneTitle},
 	}
 	e := newTestExecutor(root, &fakeBeads{}, tmux, "", "claude --plan", "sidebar")
 	if _, _, err := e.StartPlanningPane(context.Background(), "claude"); err != nil {
@@ -85,6 +86,91 @@ func TestStartPlanningPaneSidebarTargetsLastNonSpacerPane(t *testing.T) {
 	}
 	if tmux.splitTarget != "%2" {
 		t.Fatalf("split target = %q, want %q", tmux.splitTarget, "%2")
+	}
+}
+
+func TestResolveControlPaneIDPrefersBmuxWhenCurrentPaneIsIdlePane(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		panes:         []string{"%1", "%9"},
+		currentPaneID: "%9",
+		titles: map[string]string{
+			"%9": layout.IdlePaneTitle,
+		},
+		currentByPane: map[string]string{
+			"%1": "bmux",
+			"%9": "cat",
+		},
+	}
+	e := newTestExecutor(root, &fakeBeads{}, tmux, "codex", "", "sidebar")
+	controlPaneID, err := e.resolveControlPaneID(context.Background())
+	if err != nil {
+		t.Fatalf("resolve control pane id: %v", err)
+	}
+	if controlPaneID != "%1" {
+		t.Fatalf("control pane id = %q, want %q", controlPaneID, "%1")
+	}
+}
+
+func TestResolveControlPaneIDSkipsAuxiliaryCurrentPaneWithoutBmuxMatch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		panes:         []string{"%9", "%3", "%4"},
+		currentPaneID: "%9",
+		titles: map[string]string{
+			"%9": layout.IdlePaneTitle,
+		},
+		currentByPane: map[string]string{
+			"%9": "cat",
+			"%3": "zsh",
+			"%4": "bash",
+		},
+	}
+	e := newTestExecutor(root, &fakeBeads{}, tmux, "codex", "", "sidebar")
+	controlPaneID, err := e.resolveControlPaneID(context.Background())
+	if err != nil {
+		t.Fatalf("resolve control pane id: %v", err)
+	}
+	if controlPaneID != "%3" {
+		t.Fatalf("control pane id = %q, want %q", controlPaneID, "%3")
+	}
+}
+
+func TestReconcileRunsDoesNotLoopIdlePaneWhenCurrentPaneIsAuxiliary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		panes:         []string{"%1", "%9"},
+		currentPaneID: "%9",
+		titles: map[string]string{
+			"%9": layout.IdlePaneTitle,
+		},
+		currentByPane: map[string]string{
+			"%1": "bmux",
+			"%9": "cat",
+		},
+		terminalWidth:  200,
+		terminalHeight: 50,
+		windowWidth:    200,
+		windowHeight:   50,
+	}
+	e := newTestExecutor(root, &fakeBeads{}, tmux, "codex", "", "sidebar")
+	if err := e.ReconcileRuns(context.Background()); err != nil {
+		t.Fatalf("first reconcile runs: %v", err)
+	}
+	if err := e.ReconcileRuns(context.Background()); err != nil {
+		t.Fatalf("second reconcile runs: %v", err)
+	}
+	if len(tmux.killed) != 1 || tmux.killed[0] != "%9" {
+		t.Fatalf("expected one stale idle-pane cleanup kill, got %#v", tmux.killed)
+	}
+	if tmux.splitDir != "" {
+		t.Fatalf("expected no idle-pane recreate split, got split dir %q", tmux.splitDir)
+	}
+	if _, ok := tmux.titles["%9"]; ok {
+		t.Fatalf("idle pane title should be removed after cleanup")
 	}
 }
 
@@ -104,6 +190,55 @@ func TestReconcileRunsTriggersLayoutRecalculate(t *testing.T) {
 	}
 	if len(tmux.layouts) == 0 {
 		t.Fatalf("expected layout recalc to apply layout")
+	}
+}
+
+func TestReconcileRunsPropagatesLayoutRecalculateError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		panes:          []string{"%1", "%2"},
+		terminalWidth:  200,
+		terminalHeight: 50,
+		windowWidth:    200,
+		windowHeight:   50,
+		layoutErr:      errors.New("layout failed"),
+	}
+	e := newTestExecutor(root, &fakeBeads{}, tmux, "codex", "", "sidebar")
+	err := e.ReconcileRuns(context.Background())
+	if err == nil {
+		t.Fatalf("expected reconcile runs error")
+	}
+	if !strings.Contains(err.Error(), "apply layout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStartPlanningPaneFailsAndKillsPaneWhenLayoutRecalcFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tmux := &fakeTmux{
+		paneID:         "%7",
+		panes:          []string{"%1", "%2"},
+		terminalWidth:  200,
+		terminalHeight: 50,
+		windowWidth:    200,
+		windowHeight:   50,
+		layoutErr:      errors.New("layout failed"),
+	}
+	e := newTestExecutor(root, &fakeBeads{}, tmux, "", "claude --plan", "sidebar")
+	_, _, err := e.StartPlanningPane(context.Background(), "claude")
+	if err == nil {
+		t.Fatalf("expected planning pane start error")
+	}
+	if !strings.Contains(err.Error(), "apply layout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tmux.killed) == 0 || tmux.killed[0] != "%7" {
+		t.Fatalf("expected created pane to be killed after recalc failure, got %#v", tmux.killed)
+	}
+	if len(tmux.sent) != 0 {
+		t.Fatalf("expected no command sent when pane creation fails, got %#v", tmux.sent)
 	}
 }
 
