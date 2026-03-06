@@ -22,6 +22,7 @@ type Issue struct {
 	Title          string
 	Description    string
 	Status         string
+	Assignee       string `json:"assignee"`
 	Priority       int
 	IssueType      string `json:"issue_type"`
 	ParentID       string `json:"parent"`
@@ -54,7 +55,7 @@ type TaskRunMeta struct {
 	StartedAt        time.Time `json:"started_at,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 	ExpectedProcess  string    `json:"expected_process,omitempty"`
-	ApeSessionID   string    `json:"ape_session_id,omitempty"`
+	ApeSessionID     string    `json:"ape_session_id,omitempty"`
 }
 
 type LiveRun struct {

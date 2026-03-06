@@ -143,6 +143,106 @@ func TestMergeConflictConfirmEnterDispatchesCreateCmd(t *testing.T) {
 	}
 }
 
+func TestEnterWithClaimedIssueEntersHandoffConfirmMode(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-claimed", Title: "Claimed task", Status: "open", Assignee: "Someone", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-claimed": {}}
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no immediate dispatch")
+	}
+	if got.mode != modeClaimedHandoffConfirm {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	if got.pendingClaimedHandoff == nil || len(got.pendingClaimedHandoff.claimed) != 1 {
+		t.Fatalf("pending handoff = %#v", got.pendingClaimedHandoff)
+	}
+}
+
+func TestClaimedHandoffConfirmEscCancelsLaunch(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeClaimedHandoffConfirm
+	m.pendingClaimedHandoff = &pendingClaimedHandoff{
+		mode: model.RunModePlan,
+		launchItems: []batchLaunchItem{
+			{issueID: "bd-claimed"},
+		},
+		claimed: []claimedIssueInfo{
+			{issueID: "bd-claimed", assignee: "Someone"},
+		},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no command")
+	}
+	if got.mode != modeMain {
+		t.Fatalf("mode = %v", got.mode)
+	}
+	if got.pendingClaimedHandoff != nil {
+		t.Fatalf("pending handoff should be cleared")
+	}
+	if !strings.Contains(strings.ToLower(got.status), "canceled") {
+		t.Fatalf("status = %q", got.status)
+	}
+}
+
+func TestClaimedHandoffConfirmEnterDispatchesCommand(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.mode = modeClaimedHandoffConfirm
+	m.pendingClaimedHandoff = &pendingClaimedHandoff{
+		mode: model.RunModePlan,
+		launchItems: []batchLaunchItem{
+			{issueID: "bd-claimed"},
+		},
+		claimed: []claimedIssueInfo{
+			{issueID: "bd-claimed", assignee: "Someone"},
+		},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected command dispatch")
+	}
+	if !got.busy {
+		t.Fatalf("expected busy while handoff+launch starts")
+	}
+}
+
+func TestClaimedHandoffConfirmRendersBulkClaimedIssues(t *testing.T) {
+	t.Parallel()
+	m := NewModel(&app.Service{})
+	m.issueSourceAvailable = true
+	m.taskModeSelected = 1 // self-run
+	m.rows = buildIssueRows([]model.Issue{
+		{ID: "bd-a", Title: "A", Status: "open", Assignee: "Alice", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+		{ID: "bd-b", Title: "B", Status: "open", Assignee: "Bob", EpicID: "bd-epic", EpicTitle: "Epic", HierarchyDepth: 1},
+	})
+	m.selectedTaskIssueIDs = map[string]struct{}{"bd-a": {}, "bd-b": {}}
+	m.selected = firstSelectableRow(m.rows)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no immediate dispatch")
+	}
+	if got.pendingClaimedHandoff == nil || len(got.pendingClaimedHandoff.claimed) != 2 {
+		t.Fatalf("expected two claimed issues, got %#v", got.pendingClaimedHandoff)
+	}
+}
+
 func TestActionResultErrorCanStillTriggerRefresh(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil)

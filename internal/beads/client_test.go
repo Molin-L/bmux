@@ -121,6 +121,24 @@ func TestClaimBuildsArgs(t *testing.T) {
 	}
 }
 
+func TestHandoffBuildsArgs(t *testing.T) {
+	t.Setenv("BD_ACTOR", "Agent Smith")
+	r := &fakeRunner{out: `{}`}
+	c := &Client{repoRoot: t.TempDir(), runner: r}
+
+	if err := c.Handoff(context.Background(), "bd-9"); err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls = %d", len(r.calls))
+	}
+	args := r.calls[0]
+	want := []string{"update", "bd-9", "--assignee", "Agent Smith", "--status", "in_progress", "--json"}
+	for _, token := range want {
+		mustContain(t, args, token)
+	}
+}
+
 func TestAddDependencyBuildsArgs(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{out: `{}`}

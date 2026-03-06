@@ -9,13 +9,14 @@ import (
 )
 
 type fakeBeads struct {
-	issue       model.Issue
-	deps        []model.Dependency
-	depsByIssue map[string][]model.Dependency
-	showByID    map[string]model.Issue
-	showErrByID map[string]error
-	showCalls   []string
-	claimed     []string
+	issue        model.Issue
+	deps         []model.Dependency
+	depsByIssue  map[string][]model.Dependency
+	showByID     map[string]model.Issue
+	showErrByID  map[string]error
+	showCalls    []string
+	claimed      []string
+	claimErrByID map[string]error
 }
 
 func (f *fakeBeads) Show(_ context.Context, issueID string) (model.Issue, error) {
@@ -48,6 +49,9 @@ func (f *fakeBeads) Dependencies(_ context.Context, issueID string) ([]model.Dep
 
 func (f *fakeBeads) Claim(_ context.Context, issueID string) error {
 	f.claimed = append(f.claimed, issueID)
+	if err, ok := f.claimErrByID[issueID]; ok {
+		return err
+	}
 	return nil
 }
 

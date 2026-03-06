@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Molin-L/bmux/internal/beads"
 	"github.com/Molin-L/bmux/internal/model"
 )
 
@@ -89,7 +90,7 @@ func (e *Executor) startTaskModeInternal(ctx context.Context, issueID string, mo
 
 func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode model.RunMode, apeSessionID, paneID string, claimBeforeStart bool) (model.TaskRunMeta, error) {
 	if claimBeforeStart {
-		if err := e.beads.Claim(ctx, issueID); err != nil {
+		if err := e.claimIssue(ctx, issueID); err != nil {
 			return model.TaskRunMeta{}, err
 		}
 	}
@@ -184,7 +185,7 @@ func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode m
 	runLockPersisted = true
 
 	if !claimBeforeStart {
-		if err := e.beads.Claim(ctx, issueID); err != nil {
+		if err := e.claimIssue(ctx, issueID); err != nil {
 			_ = e.tmux.SendKeys(ctx, usePaneID, "C-c", false)
 			if runLockPersisted {
 				_ = e.store.RunLockDelete(issueID)
@@ -197,6 +198,24 @@ func (e *Executor) startRunnableTask(ctx context.Context, issueID string, mode m
 	}
 
 	return run, nil
+}
+
+func (e *Executor) claimIssue(ctx context.Context, issueID string) error {
+	if err := e.beads.Claim(ctx, issueID); err != nil {
+		claimedBy, ok := beads.ClaimedByFromError(err)
+		if !ok {
+			return err
+		}
+		actor, actorErr := beads.ResolveActor(ctx, e.repoRoot)
+		if actorErr != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(claimedBy), strings.TrimSpace(actor)) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *Executor) startWaitingTask(ctx context.Context, issueID string, mode model.RunMode, apeSessionID, blockerID string) (model.TaskRunMeta, error) {

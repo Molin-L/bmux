@@ -83,6 +83,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case batchLaunchResultMsg:
 		m.busy = false
 		m.batchActive = false
+		if m.mode == modeClaimedHandoffConfirm {
+			m.mode = modeMain
+			m.pendingClaimedHandoff = nil
+		}
 		started := len(msg.started)
 		waiting := len(msg.waiting)
 		failed := len(msg.failed)
@@ -121,6 +125,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = modeMain
 		}
 		if msg.err != nil {
+			m.batchActive = false
 			if strings.TrimSpace(msg.status) == "" {
 				m.status = fmt.Sprintf("Action failed: %v", msg.err)
 			}
@@ -226,6 +231,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					res, err := m.svc.CreateHierarchyFromPlan(context.Background(), plan)
 					return hierarchyCreatedMsg{result: res, err: err}
 				}
+			}
+			return m, nil
+		}
+		if m.mode == modeClaimedHandoffConfirm {
+			switch msg.String() {
+			case "esc":
+				m.mode = modeMain
+				m.pendingClaimedHandoff = nil
+				m.batchActive = false
+				m.status = "Launch canceled. Selected task(s) are already claimed."
+				m.statusDetails = nil
+				return m, nil
+			case "enter":
+				if m.busy {
+					return m, nil
+				}
+				if m.pendingClaimedHandoff == nil {
+					m.mode = modeMain
+					m.batchActive = false
+					return m, nil
+				}
+				pending := *m.pendingClaimedHandoff
+				m.busy = true
+				m.batchActive = true
+				m.status = fmt.Sprintf("Handing off %d claimed task(s) and launching %d task(s)...", len(pending.claimed), len(pending.launchItems))
+				m.statusDetails = nil
+				return m, m.handoffAndLaunchCmd(pending)
 			}
 			return m, nil
 		}
@@ -421,6 +453,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.status = "No launchable tasks selected."
 				}
+				return m, nil
+			}
+			claimed := make([]claimedIssueInfo, 0, len(launchIDs))
+			for _, issueID := range launchIDs {
+				issue, ok := m.issueByID(issueID)
+				if !ok {
+					continue
+				}
+				assignee := strings.TrimSpace(issue.Assignee)
+				if assignee == "" {
+					continue
+				}
+				claimed = append(claimed, claimedIssueInfo{
+					issueID:  issueID,
+					assignee: assignee,
+				})
+			}
+			if len(claimed) > 0 {
+				m.pendingClaimedHandoff = &pendingClaimedHandoff{
+					mode:        mode,
+					launchItems: m.batchLaunchItems(launchIDs),
+					claimed:     claimed,
+				}
+				m.mode = modeClaimedHandoffConfirm
+				m.status = fmt.Sprintf("WARNING: %d selected task(s) are already claimed. Enter=handoff and continue, Esc=cancel launch.", len(claimed))
+				m.statusDetails = nil
 				return m, nil
 			}
 			items := m.batchLaunchItems(launchIDs)
@@ -705,7 +763,7 @@ func (m *Model) taskViewportLayout() (int, int, int) {
 		if m.prompt != "" {
 			reserved += 6
 		}
-		if m.mode == modeAgentSelect || m.mode == modePlanConfirm {
+		if m.mode == modeAgentSelect || m.mode == modePlanConfirm || m.mode == modeClaimedHandoffConfirm {
 			reserved += 5
 		}
 		height = m.height - reserved - taskListStyle.GetVerticalFrameSize()
@@ -869,38 +927,62 @@ func (m *Model) batchLaunchItems(issueIDs []string) []batchLaunchItem {
 	return items
 }
 
+func (m Model) handoffAndLaunchCmd(pending pendingClaimedHandoff) tea.Cmd {
+	return func() tea.Msg {
+		if m.svc == nil {
+			return actionResultMsg{
+				status: "Failed to handoff selected issues",
+				err:    errors.New("service is not configured"),
+			}
+		}
+		for _, claimed := range pending.claimed {
+			if err := m.svc.HandoffIssue(context.Background(), claimed.issueID); err != nil {
+				return actionResultMsg{
+					status: fmt.Sprintf("Failed to handoff %s", claimed.issueID),
+					err:    err,
+				}
+			}
+		}
+		return m.executeBatchLaunch(pending.launchItems, pending.mode)
+	}
+}
+
 func (m Model) startBatchLaunchCmd(items []batchLaunchItem, mode model.RunMode) tea.Cmd {
 	launchItems := append([]batchLaunchItem(nil), items...)
 	return func() tea.Msg {
-		started := map[string]string{}
-		waiting := map[string]string{}
-		failed := map[string]string{}
-		if m.svc == nil {
-			for _, item := range launchItems {
-				failed[item.issueID] = "service is not configured"
-			}
-			return batchLaunchResultMsg{mode: mode, started: started, waiting: waiting, failed: failed}
-		}
-		for _, item := range launchItems {
-			var (
-				run model.TaskRunMeta
-				err error
-			)
-			if item.blockerID != "" {
-				run, err = m.svc.StartTaskModeWaiting(context.Background(), item.issueID, mode, item.blockerID)
-			} else {
-				run, err = m.svc.StartTaskMode(context.Background(), item.issueID, mode)
-			}
-			if err != nil {
-				failed[item.issueID] = err.Error()
-				continue
-			}
-			if run.Pending {
-				waiting[item.issueID] = strings.TrimSpace(run.PaneID)
-				continue
-			}
-			started[item.issueID] = strings.TrimSpace(run.PaneID)
+		return m.executeBatchLaunch(launchItems, mode)
+	}
+}
+
+func (m Model) executeBatchLaunch(items []batchLaunchItem, mode model.RunMode) batchLaunchResultMsg {
+	started := map[string]string{}
+	waiting := map[string]string{}
+	failed := map[string]string{}
+	if m.svc == nil {
+		for _, item := range items {
+			failed[item.issueID] = "service is not configured"
 		}
 		return batchLaunchResultMsg{mode: mode, started: started, waiting: waiting, failed: failed}
 	}
+	for _, item := range items {
+		var (
+			run model.TaskRunMeta
+			err error
+		)
+		if item.blockerID != "" {
+			run, err = m.svc.StartTaskModeWaiting(context.Background(), item.issueID, mode, item.blockerID)
+		} else {
+			run, err = m.svc.StartTaskMode(context.Background(), item.issueID, mode)
+		}
+		if err != nil {
+			failed[item.issueID] = err.Error()
+			continue
+		}
+		if run.Pending {
+			waiting[item.issueID] = strings.TrimSpace(run.PaneID)
+			continue
+		}
+		started[item.issueID] = strings.TrimSpace(run.PaneID)
+	}
+	return batchLaunchResultMsg{mode: mode, started: started, waiting: waiting, failed: failed}
 }

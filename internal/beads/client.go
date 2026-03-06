@@ -155,6 +155,15 @@ func (c *Client) Claim(ctx context.Context, issueID string) error {
 	return err
 }
 
+func (c *Client) Handoff(ctx context.Context, issueID string) error {
+	actor, err := ResolveActor(ctx, c.repoRoot)
+	if err != nil {
+		return err
+	}
+	_, err = c.runner.Run(ctx, c.repoRoot, "bd", "update", issueID, "--assignee", actor, "--status", "in_progress", "--json")
+	return err
+}
+
 func (c *Client) Close(ctx context.Context, issueID, reason string) error {
 	if reason == "" {
 		reason = "Completed via bmux"

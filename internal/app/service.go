@@ -27,6 +27,7 @@ type BeadsClient interface {
 	CreateIssue(ctx context.Context, req model.CreateIssueRequest) (model.Issue, error)
 	AddDependency(ctx context.Context, issueID, blockedByID, depType string) error
 	Claim(ctx context.Context, issueID string) error
+	Handoff(ctx context.Context, issueID string) error
 	UpdateMetadata(ctx context.Context, issueID string, metadata map[string]string) error
 	Close(ctx context.Context, issueID, reason string) error
 }
@@ -852,6 +853,14 @@ func (s *Service) StartTaskMode(ctx context.Context, issueID string, mode model.
 
 func (s *Service) StartTaskModeWaiting(ctx context.Context, issueID string, mode model.RunMode, blockerID string) (model.TaskRunMeta, error) {
 	return s.executor.StartTaskModeWaiting(ctx, issueID, mode, blockerID)
+}
+
+func (s *Service) HandoffIssue(ctx context.Context, issueID string) error {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return errors.New("issue id is required")
+	}
+	return s.beads.Handoff(ctx, issueID)
 }
 
 func (s *Service) StartApe(ctx context.Context) (string, error) {

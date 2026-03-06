@@ -192,6 +192,30 @@ func TestViewRendersMergeConflictConfirmInline(t *testing.T) {
 	}
 }
 
+func TestViewRendersClaimedHandoffConfirmInline(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil)
+	m.mode = modeClaimedHandoffConfirm
+	m.pendingClaimedHandoff = &pendingClaimedHandoff{
+		mode: model.RunModePlan,
+		claimed: []claimedIssueInfo{
+			{issueID: "bd-1", assignee: "Alice"},
+			{issueID: "bd-2", assignee: "Bob"},
+		},
+	}
+
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "WARNING: selected issues are already claimed.") {
+		t.Fatalf("missing warning header:\n%s", out)
+	}
+	if !strings.Contains(out, "Enter=handoff and continue") || !strings.Contains(out, "Esc=cancel launch") {
+		t.Fatalf("missing handoff actions:\n%s", out)
+	}
+	if !strings.Contains(out, "- bd-1 (assignee: Alice)") || !strings.Contains(out, "- bd-2 (assignee: Bob)") {
+		t.Fatalf("missing claimed issue lines:\n%s", out)
+	}
+}
+
 func TestViewRendersPendingRunWithBlockingInfo(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

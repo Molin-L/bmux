@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Molin-L/bmux/internal/errorsx"
 	"github.com/Molin-L/bmux/internal/model"
 	"github.com/Molin-L/bmux/internal/state"
 )
@@ -92,6 +93,54 @@ func TestStartTaskModeSelfRunUsesYoloFlag(t *testing.T) {
 	}
 	if !strings.Contains(tmux.sent[0], "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("expected yolo flag in %q", tmux.sent[0])
+	}
+}
+
+func TestStartTaskModeAllowsAlreadyClaimedByCurrentActor(t *testing.T) {
+	t.Setenv("BD_ACTOR", "Molin Liu")
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%44"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-claimed-self", Title: "Self claimed", Status: "open"},
+		claimErrByID: map[string]error{
+			"bd-claimed-self": &errorsx.CommandError{
+				Command:  "bd",
+				Args:     []string{"update", "bd-claimed-self", "--claim", "--json"},
+				StdErr:   "Error claiming bd-claimed-self: issue already claimed by Molin Liu",
+				ExitCode: 1,
+			},
+		},
+	}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-claimed-self": {IssueID: "bd-claimed-self", Branch: "task/bd-claimed-self", WorktreePath: root + "/.worktrees/task__bd-claimed-self", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	if _, err := e.StartTaskMode(context.Background(), "bd-claimed-self", model.RunModePlan); err != nil {
+		t.Fatalf("start task mode should allow self-claimed issue: %v", err)
+	}
+}
+
+func TestStartTaskModeFailsWhenAlreadyClaimedByOtherActor(t *testing.T) {
+	t.Setenv("BD_ACTOR", "Molin Liu")
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%45"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-claimed-other", Title: "Other claimed", Status: "open"},
+		claimErrByID: map[string]error{
+			"bd-claimed-other": &errorsx.CommandError{
+				Command:  "bd",
+				Args:     []string{"update", "bd-claimed-other", "--claim", "--json"},
+				StdErr:   "Error claiming bd-claimed-other: issue already claimed by Someone Else",
+				ExitCode: 1,
+			},
+		},
+	}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-claimed-other": {IssueID: "bd-claimed-other", Branch: "task/bd-claimed-other", WorktreePath: root + "/.worktrees/task__bd-claimed-other", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	if _, err := e.StartTaskMode(context.Background(), "bd-claimed-other", model.RunModePlan); err == nil {
+		t.Fatal("expected claim conflict when claimed by another actor")
 	}
 }
 
@@ -347,6 +396,40 @@ func TestPromotePendingRunsStartsTaskInSamePaneWhenBlockerClosed(t *testing.T) {
 	}
 	if runMeta.Pending || runMeta.BlockedByIssueID != "" || runMeta.ExpectedProcess != "codex" {
 		t.Fatalf("unexpected promoted run meta: %+v", runMeta)
+	}
+}
+
+func TestPromotePendingRunsAllowsAlreadyClaimedByCurrentActor(t *testing.T) {
+	t.Setenv("BD_ACTOR", "Molin Liu")
+	root := t.TempDir()
+	tmux := &fakeTmux{paneID: "%46"}
+	beads := &fakeBeads{
+		issue: model.Issue{ID: "bd-promote-self", Title: "Promote task", Status: "open"},
+		showByID: map[string]model.Issue{
+			"bd-blocker": {ID: "bd-blocker", Status: "closed"},
+		},
+		claimErrByID: map[string]error{
+			"bd-promote-self": &errorsx.CommandError{
+				Command:  "bd",
+				Args:     []string{"update", "bd-promote-self", "--claim", "--json"},
+				StdErr:   "Error claiming bd-promote-self: issue already claimed by Molin Liu",
+				ExitCode: 1,
+			},
+		},
+	}
+	e := newExecutorWithMetas(root, beads, tmux, map[string]model.TaskBranchMeta{
+		"bd-promote-self": {IssueID: "bd-promote-self", Branch: "task/bd-promote-self-task", WorktreePath: root + "/.worktrees/task__bd-promote-self-task", BaseBranch: "main", BaseCommit: "abc123"},
+	})
+
+	if _, err := e.StartTaskModeWaiting(context.Background(), "bd-promote-self", model.RunModePlan, "bd-blocker"); err != nil {
+		t.Fatalf("start waiting mode: %v", err)
+	}
+	promoted, waiting, err := e.PromotePendingRuns(context.Background())
+	if err != nil {
+		t.Fatalf("promote pending runs: %v", err)
+	}
+	if promoted != 1 || waiting != 0 {
+		t.Fatalf("promoted=%d waiting=%d", promoted, waiting)
 	}
 }
 

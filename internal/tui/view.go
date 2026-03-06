@@ -109,6 +109,9 @@ func (m Model) View() string {
 	if m.mode == modeMergeConflictConfirm {
 		body = append(body, statusStyle.Render(m.renderMergeConflictConfirm()))
 	}
+	if m.mode == modeClaimedHandoffConfirm {
+		body = append(body, statusStyle.Render(m.renderClaimedHandoffConfirm()))
+	}
 
 	return strings.Join(body, "\n")
 }
@@ -121,6 +124,20 @@ func (m Model) renderMergeConflictConfirm() string {
 		"Merge conflict for %s.\nEnter=create conflict task (chore P0), Esc=skip.",
 		strings.TrimSpace(m.pendingMergeConflict.issueID),
 	)
+}
+
+func (m Model) renderClaimedHandoffConfirm() string {
+	if m.pendingClaimedHandoff == nil || len(m.pendingClaimedHandoff.claimed) == 0 {
+		return "WARNING: selected issues are already claimed.\nEnter=handoff and continue, Esc=cancel launch."
+	}
+	lines := []string{
+		"WARNING: selected issues are already claimed.",
+		"Enter=handoff and continue, Esc=cancel launch.",
+	}
+	for _, claimed := range m.pendingClaimedHandoff.claimed {
+		lines = append(lines, fmt.Sprintf("- %s (assignee: %s)", claimed.issueID, claimed.assignee))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderTasksContent(width int) tasksRender {

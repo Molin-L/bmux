@@ -26,6 +26,7 @@ type fakeBeads struct {
 	showCalls   []string
 	metaWrites  map[string]map[string]string
 	claimed     []string
+	handoffs    []string
 	closed      []closeCall
 	closeErr    error
 	depAdds     []depAddCall
@@ -119,6 +120,10 @@ func (f *fakeBeads) AddDependency(_ context.Context, issueID, blockedByID, depTy
 }
 func (f *fakeBeads) Claim(_ context.Context, issueID string) error {
 	f.claimed = append(f.claimed, issueID)
+	return nil
+}
+func (f *fakeBeads) Handoff(_ context.Context, issueID string) error {
+	f.handoffs = append(f.handoffs, issueID)
 	return nil
 }
 func (f *fakeBeads) Close(_ context.Context, issueID, reason string) error {

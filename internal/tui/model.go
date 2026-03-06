@@ -75,6 +75,7 @@ const (
 	modeAgentSelect
 	modePlanConfirm
 	modeMergeConflictConfirm
+	modeClaimedHandoffConfirm
 )
 
 const (
@@ -90,6 +91,17 @@ type pendingMergeConflict struct {
 	issueID  string
 	runMode  model.RunMode
 	conflict *app.MergeConflictError
+}
+
+type claimedIssueInfo struct {
+	issueID  string
+	assignee string
+}
+
+type pendingClaimedHandoff struct {
+	mode        model.RunMode
+	launchItems []batchLaunchItem
+	claimed     []claimedIssueInfo
 }
 
 type Model struct {
@@ -125,6 +137,7 @@ type Model struct {
 	spinnerFrame           int
 	preserveStatusNextLoad bool
 	pendingMergeConflict   *pendingMergeConflict
+	pendingClaimedHandoff  *pendingClaimedHandoff
 }
 
 func NewModel(svc *app.Service) Model {
